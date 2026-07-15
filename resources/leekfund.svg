@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="256"
+  height="256"
+  viewBox="0 0 24 24"
+  fill="none"
+>
+  <path
+    fill="#7890A4"
+    d="M4 20v-6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v6H4Zm6 0V10a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v10h-4Zm6 0V5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v15h-4ZM3 22h18v-2H3v2Z"
+  />
+</svg>

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src {{cspSource}} data:; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}' {{cspSource}}; font-src {{cspSource}};"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="{{cssUri}}" />
+    <title>A 股实时走势</title>
+  </head>
+  <body>
+    <header class="quote-strip">
+      <div class="stock-summary">
+        <div class="stock-identity">
+          <h1 id="stockName">正在加载</h1>
+          <span id="stockCode">--</span>
+        </div>
+        <strong id="quotePrice" class="quote-price flat">--</strong>
+        <div class="change-block">
+          <span id="quoteChange" class="quote-change flat">--</span>
+          <small>更新 <span id="quoteUpdated">--</span></small>
+        </div>
+      </div>
+
+      <div class="metric-grid" aria-label="实时行情指标">
+        <div><span>今开</span><strong id="metricOpen">--</strong></div>
+        <div><span>最高</span><strong id="metricHigh">--</strong></div>
+        <div><span>最低</span><strong id="metricLow">--</strong></div>
+        <div><span>昨收</span><strong id="metricPrevious">--</strong></div>
+        <div><span>振幅</span><strong id="metricAmplitude">--</strong></div>
+        <div><span>换手</span><strong id="metricTurnover">--</strong></div>
+        <div><span>成交量</span><strong id="metricVolume">--</strong></div>
+        <div><span>成交额</span><strong id="metricAmount">--</strong></div>
+        <div><span>市盈</span><strong id="metricPe">--</strong></div>
+        <div><span>市净</span><strong id="metricPb">--</strong></div>
+        <div><span>总市值</span><strong id="metricMarketCap">--</strong></div>
+        <div><span>流通值</span><strong id="metricFloatCap">--</strong></div>
+      </div>
+
+      <div class="quote-actions">
+        <button id="watchButton" class="compact-action watch-button" type="button" title="切换自选" aria-label="切换自选" aria-pressed="false"><svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3.8 2.45 4.97 5.49.8-3.97 3.87.94 5.47L12 16.56l-4.91 2.58.94-5.47-3.97-3.87 5.49-.8L12 3.8Z" /></svg></button>
+        <button id="refreshButton" class="compact-action" type="button" title="立即刷新" aria-label="立即刷新"><svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 8.2A7 7 0 0 1 18.9 9M17.9 15.8A7 7 0 0 1 5.1 15" /></svg></button>
+      </div>
+
+      <div class="hidden-refresh-state" aria-hidden="true">
+        <span id="statusDot"></span>
+        <span id="refreshState"></span>
+        <span id="marketState"></span>
+      </div>
+    </header>
+
+    <main class="terminal-layout">
+      <div class="chart-column">
+        <nav class="period-bar" aria-label="走势周期">
+          <button class="active" data-interval="trend" type="button">分时</button>
+          <button data-interval="trend5" type="button">5日▼</button>
+          <button data-interval="101" type="button">日K</button>
+          <button data-interval="102" type="button">周K</button>
+          <button data-interval="103" type="button">月K</button>
+          <span class="period-divider"></span>
+          <button data-interval="5" type="button">5分钟</button>
+          <button data-interval="15" type="button">15分钟</button>
+          <button data-interval="30" type="button">30分钟</button>
+          <button data-interval="60" type="button">60分钟</button>
+          <span id="chartSubtitle" class="period-source">分时 · 东方财富</span>
+        </nav>
+
+        <section class="chart-panel">
+          <div class="chart-shell">
+            <div id="chartLoading" class="panel-loading">正在加载走势…</div>
+            <div id="trendChart" class="trend-chart"></div>
+          </div>
+        </section>
+      </div>
+
+      <aside class="realtime-column">
+        <section class="flow-panel">
+          <div class="side-caption">
+            <strong>实时资金流</strong>
+            <span id="extrasUpdated">--</span>
+          </div>
+          <div id="extrasLoading" class="side-loading">正在同步实时数据…</div>
+          <div id="flowGrid" class="flow-list">
+            <div class="flow-main"><span>主力净流入</span><strong id="flowMain" class="flat">--</strong></div>
+            <div><span>超大单</span><strong id="flowSuper">--</strong></div>
+            <div><span>大单</span><strong id="flowLarge">--</strong></div>
+            <div><span>中单</span><strong id="flowMedium">--</strong></div>
+            <div><span>小单</span><strong id="flowSmall">--</strong></div>
+          </div>
+        </section>
+
+        <section class="trades-panel">
+          <div class="side-caption">
+            <strong>逐笔成交</strong>
+            <span class="trade-caption-meta"><em id="tradesUpdated">--</em><i class="buy-dot"></i>买 <i class="sell-dot"></i>卖</span>
+          </div>
+          <div class="trade-table-wrap">
+            <table class="trade-table">
+              <thead>
+                <tr><th>时间</th><th>价格</th><th>量(手)</th><th>方向</th></tr>
+              </thead>
+              <tbody id="tradeRows">
+                <tr><td colspan="4" class="empty-row">正在加载成交明细…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <div id="toast" class="toast hidden" role="status"></div>
+    <script nonce="{{nonce}}" src="{{echartsUri}}"></script>
+    <script nonce="{{nonce}}" src="{{appUri}}"></script>
+  </body>
+</html>

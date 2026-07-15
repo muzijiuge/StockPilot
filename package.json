@@ -1,0 +1,209 @@
+{
+  "name": "a-share-leek",
+  "displayName": "A股韭菜盒子",
+  "description": "仅保留 A 股的 VS Code 行情侧栏、K 线、资产、资讯、板块行情和大盘云图。",
+  "version": "1.3.5",
+  "publisher": "codex-local",
+  "author": "Local customization",
+  "license": "BSD-3-Clause",
+  "icon": "resources/logo.png",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "A股",
+    "股票",
+    "K线",
+    "行情",
+    "大盘云图"
+  ],
+  "main": "./out/extension.js",
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
+    "activationEvents": [
+      "onStartupFinished",
+      "onView:aShareLeek.stock",
+      "onCommand:aShareLeek.openCenter",
+      "onCommand:aShareLeek.openSector",
+      "onCommand:aShareLeek.openStock"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aShareLeek",
+          "title": "A股韭菜盒子",
+          "icon": "resources/leekfund.svg"
+        }
+      ]
+    },
+    "views": {
+      "aShareLeek": [
+        {
+          "id": "aShareLeek.home",
+          "name": "HOME",
+          "visibility": "collapsed",
+          "contextualTitle": "A股韭菜盒子"
+        },
+        {
+          "id": "aShareLeek.stock",
+          "name": "STOCK",
+          "visibility": "visible",
+          "contextualTitle": "A股行情"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "aShareLeek.openCenter",
+        "title": "A股韭菜盒子: 打开韭菜中心",
+        "icon": "$(home)"
+      },
+      {
+        "command": "aShareLeek.openAssets",
+        "title": "A股韭菜盒子: 资产管理",
+        "icon": "$(briefcase)"
+      },
+      {
+        "command": "aShareLeek.openNews",
+        "title": "A股韭菜盒子: 市场资讯",
+        "icon": "$(book)"
+      },
+      {
+        "command": "aShareLeek.openCloud",
+        "title": "A股韭菜盒子: 大盘云图",
+        "icon": "$(cloud)"
+      },
+      {
+        "command": "aShareLeek.openSector",
+        "title": "A股韭菜盒子: 板块行情",
+        "icon": "$(table)"
+      },
+      {
+        "command": "aShareLeek.refresh",
+        "title": "刷新 A 股行情",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "aShareLeek.sort",
+        "title": "切换排序",
+        "icon": "$(list-ordered)"
+      },
+      {
+        "command": "aShareLeek.addStock",
+        "title": "添加 A 股",
+        "icon": "$(add)"
+      },
+      {
+        "command": "aShareLeek.removeStock",
+        "title": "移除自选股",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "aShareLeek.setHolding",
+        "title": "设置持仓",
+        "icon": "$(wallet)"
+      },
+      {
+        "command": "aShareLeek.openStock",
+        "title": "查看股票实时走势"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "aShareLeek.refresh",
+          "when": "view == aShareLeek.stock",
+          "group": "navigation@1"
+        },
+        {
+          "command": "aShareLeek.sort",
+          "when": "view == aShareLeek.stock",
+          "group": "navigation@2"
+        },
+        {
+          "command": "aShareLeek.addStock",
+          "when": "view == aShareLeek.stock",
+          "group": "navigation@3"
+        },
+        {
+          "command": "aShareLeek.openCenter",
+          "when": "view == aShareLeek.stock",
+          "group": "navigation@4"
+        },
+        {
+          "command": "aShareLeek.openAssets",
+          "when": "view == aShareLeek.stock",
+          "group": "navigation@5"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "aShareLeek.openStock",
+          "when": "view == aShareLeek.stock && viewItem =~ /stock|holding|index/",
+          "group": "inline@1"
+        },
+        {
+          "command": "aShareLeek.setHolding",
+          "when": "view == aShareLeek.stock && viewItem =~ /stock|holding/",
+          "group": "holding@1"
+        },
+        {
+          "command": "aShareLeek.removeStock",
+          "when": "view == aShareLeek.stock && viewItem == stock",
+          "group": "modify@1"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "aShareLeek.openSector",
+        "key": "ctrl+alt+s",
+        "mac": "cmd+alt+s"
+      }
+    ],
+    "configuration": {
+      "title": "A股韭菜盒子",
+      "properties": {
+        "aShareLeek.refreshInterval": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 3000,
+          "maximum": 300000,
+          "description": "侧栏和韭菜中心的自动轮询间隔（毫秒），默认与 LeekFund 一致为 5000 毫秒；实时走势使用 SSE 推送，不受此间隔控制。"
+        },
+        "aShareLeek.requestOutsideTradingHours": {
+          "type": "boolean",
+          "default": false,
+          "description": "休市时仍执行自动市场行情请求。关闭后，盘前、午间、盘后、周末和已内置的交易所节假日暂停股票/指数、云图、板块轮询及实时走势上游 SSE；7×24 资讯仍按自身周期更新。用户手动打开或切换股票允许一次初始快照；手动打开云图或切换云图范围会请求一次最近收盘快照。"
+        },
+        "aShareLeek.enableStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "在状态栏展示上证指数与持仓盈亏。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "copy-assets": "node scripts/copy-assets.js",
+    "compile": "npm run copy-assets && tsc -p .",
+    "check": "npm run compile && node --check media/center.js && node --check media/stock-trend.js && node test/tencent-stock-search.js && node test/pick-stock-live.js && node test/market-hours.js && node test/cloud-snapshot.js && node test/cloud-front-performance.js && node test/quote-fallback.js && node test/realtime-extras-cache.js && node test/eastmoney-kline-fallback.js && node test/eastmoney-proxy.js && node test/smoke.js",
+    "test:proxy": "npm run compile && node test/eastmoney-kline-fallback.js && node test/eastmoney-proxy.js",
+    "vscode:prepublish": "npm run compile",
+    "package": "npm run compile && vsce package --no-dependencies --allow-missing-repository --out dist/a-share-leek-1.3.5.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.100.0",
+    "@vscode/vsce": "^3.3.2",
+    "echarts": "^5.6.0",
+    "typescript": "^5.7.2"
+  }
+}

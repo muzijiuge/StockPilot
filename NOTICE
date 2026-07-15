@@ -1,0 +1,19 @@
+A股韭菜盒子 - local derivative implementation
+
+Visual reference and sidebar interaction semantics:
+LeekHub/leek-fund
+Copyright 2020 Nicky
+Licensed under the BSD 3-Clause License.
+https://github.com/LeekHub/leek-fund
+
+The monochrome market icon system in this local extension is an original
+implementation and does not reuse the upstream logo asset.
+
+This local extension is independently implemented and is not an official
+LeekHub release. Names of upstream authors and contributors are not used to
+endorse or promote this derivative.
+
+Chart rendering runtime:
+Apache ECharts
+Licensed under the Apache License, Version 2.0.
+The bundled license is in third_party_licenses/ECHARTS_LICENSE.txt.

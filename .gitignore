@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+media/echarts.min.js
+third_party_licenses/ECHARTS_LICENSE.txt
+*.vsix
+test/chrome-*/
+test/*.generated.html
+test/*.png
