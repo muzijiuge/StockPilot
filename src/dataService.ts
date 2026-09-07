@@ -8,7 +8,6 @@ import {
   NewsItem,
   Quote,
   RealtimeExtras,
-  ResearchReport,
   SearchResult,
   SectorBoard,
   SectorBoardKind,
@@ -129,7 +128,18 @@ function shanghaiDateKey(now = new Date()): string {
   return [value.get('year'), value.get('month'), value.get('day')].join('-');
 }
 
+function oneMonthAgoShanghaiDateKey(now = new Date()): string {
+  const [year, month, day] = shanghaiDateKey(now).split('-').map(Number);
+  const lastDayOfPreviousMonth = new Date(Date.UTC(year, month - 1, 0)).getUTCDate();
+  return new Date(
+    Date.UTC(year, month - 2, Math.min(day, lastDayOfPreviousMonth))
+  )
+    .toISOString()
+    .slice(0, 10);
+}
+
 const SECTOR_LIST_CACHE_TTL = 60 * 1000;
+const SECTOR_TOP_CACHE_TTL = 10 * 1000;
 const SECTOR_DETAIL_CACHE_TTL = 15 * 1000;
 
 const PRIMARY_INDUSTRY_RULES: Array<{ name: string; pattern: RegExp }> = [
@@ -175,6 +185,10 @@ export class DataService {
   private readonly profileCache = new Map<string, CacheEntry<StockProfile>>();
   private readonly extrasCache = new Map<string, CacheEntry<RealtimeExtras>>();
   private readonly sectorBoardCache = new Map<SectorBoardKind, CacheEntry<SectorBoard[]>>();
+  private readonly topSectorBoardCache = new Map<
+    SectorBoardKind,
+    CacheEntry<SectorBoard[]>
+  >();
   private readonly sectorConstituentCache = new Map<
     string,
     CacheEntry<SectorConstituent[]>
@@ -197,9 +211,13 @@ export class DataService {
           headers: {
             'User-Agent':
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/132 Safari/537.36',
-            Referer: url.includes('sina.com.cn')
-              ? 'https://vip.stock.finance.sina.com.cn/'
-              : 'https://quote.eastmoney.com/'
+            Referer: url.includes('xueqiu.com')
+              ? 'https://xueqiu.com/hq'
+              : url.includes('10jqka.com.cn')
+                ? 'https://eq.10jqka.com.cn/frontend/thsTopRank/index.html'
+                : url.includes('sina.com.cn')
+                  ? 'https://vip.stock.finance.sina.com.cn/'
+                  : 'https://quote.eastmoney.com/'
           }
         });
         if (!response.ok) {
@@ -227,39 +245,89 @@ export class DataService {
     return JSON.parse(text) as T;
   }
 
+  private async postJson<T>(
+    url: string,
+    body: unknown,
+    referer: string,
+    timeoutMs = 10000,
+    maxAttempts = 3
+  ): Promise<T> {
+    let lastError: unknown;
+    const attempts = Math.max(1, maxAttempts);
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            Accept: 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+            Referer: referer,
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/132 Safari/537.36'
+          },
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+          throw new Error('HTTP ' + response.status + ' ' + response.statusText);
+        }
+        return JSON.parse(await response.text()) as T;
+      } catch (error) {
+        lastError = error;
+        if (attempt < attempts - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('网络请求失败');
+  }
+
+  private async getSectorListPage(
+    filter: string,
+    sortField: string,
+    fields: string,
+    page: number,
+    pageSize: number
+  ): Promise<any> {
+    const path =
+      '/api/qt/clist/get?pn=' +
+      String(page) +
+      '&pz=' +
+      String(pageSize) +
+      '&po=1&np=1&fltt=2&invt=2&fid=' +
+      encodeURIComponent(sortField) +
+      '&ut=bd1d9ddb04089700cf9c27f6f7426281&fs=' +
+      encodeURIComponent(filter) +
+      '&fields=' +
+      encodeURIComponent(fields);
+    let payload: any;
+    try {
+      payload = await this.getJson<any>(this.sectorClistHost + path, 18000);
+    } catch (error) {
+      if (this.sectorClistHost === 'https://push2delay.eastmoney.com') {
+        throw error;
+      }
+      this.sectorClistHost = 'https://push2delay.eastmoney.com';
+      payload = await this.getJson<any>(this.sectorClistHost + path, 18000);
+    }
+    if (payload?.rc !== 0 || !payload?.data) {
+      throw new Error('Sector market data is unavailable');
+    }
+    return payload;
+  }
+
   private async getSectorListRows(
     filter: string,
     sortField: string,
     fields: string
   ): Promise<any[]> {
     const pageSize = 100;
-    const fetchPage = async (page: number): Promise<any> => {
-      const path =
-        '/api/qt/clist/get?pn=' +
-        String(page) +
-        '&pz=' +
-        String(pageSize) +
-        '&po=1&np=1&fltt=2&invt=2&fid=' +
-        encodeURIComponent(sortField) +
-        '&ut=bd1d9ddb04089700cf9c27f6f7426281&fs=' +
-        encodeURIComponent(filter) +
-        '&fields=' +
-        encodeURIComponent(fields);
-      let payload: any;
-      try {
-        payload = await this.getJson<any>(this.sectorClistHost + path, 18000);
-      } catch (error) {
-        if (this.sectorClistHost === 'https://push2delay.eastmoney.com') {
-          throw error;
-        }
-        this.sectorClistHost = 'https://push2delay.eastmoney.com';
-        payload = await this.getJson<any>(this.sectorClistHost + path, 18000);
-      }
-      if (payload?.rc !== 0 || !payload?.data) {
-        throw new Error('Sector market data is unavailable');
-      }
-      return payload;
-    };
+    const fetchPage = (page: number): Promise<any> =>
+      this.getSectorListPage(filter, sortField, fields, page, pageSize);
 
     const first = await fetchPage(1);
     const total = Math.max(0, toNumber(first.data.total));
@@ -279,19 +347,8 @@ export class DataService {
     return total > 0 ? rows.slice(0, total) : rows;
   }
 
-  public async getSectorBoards(
-    kind: SectorBoardKind,
-    force = false
-  ): Promise<SectorBoard[]> {
-    const cached = this.sectorBoardCache.get(kind);
-    if (!force && cached && Date.now() - cached.at < SECTOR_LIST_CACHE_TTL) {
-      return cached.value;
-    }
-    const fields =
-      'f2,f3,f4,f8,f12,f13,f14,f22,f62,f104,f105,f124,f127,f128,f136,f140,f141';
-    const filter = kind === 'industry' ? 'm:90+t:2' : 'm:90+t:3';
-    const rows = await this.getSectorListRows(filter, 'f62', fields);
-    const value = rows
+  private mapSectorBoardRows(rows: any[], kind: SectorBoardKind): SectorBoard[] {
+    return rows
       .map((item) => {
         const code = String(item.f12 || '').trim().toUpperCase();
         const leaderRawCode = String(item.f140 || '').trim();
@@ -323,10 +380,54 @@ export class DataService {
         } as SectorBoard;
       })
       .filter((item) => /^BK\d+$/.test(item.code) && item.name.length > 0);
+  }
+
+  public async getSectorBoards(
+    kind: SectorBoardKind,
+    force = false
+  ): Promise<SectorBoard[]> {
+    const cached = this.sectorBoardCache.get(kind);
+    if (!force && cached && Date.now() - cached.at < SECTOR_LIST_CACHE_TTL) {
+      return cached.value;
+    }
+    const fields =
+      'f2,f3,f4,f8,f12,f13,f14,f22,f62,f104,f105,f124,f127,f128,f136,f140,f141';
+    const filter = kind === 'industry' ? 'm:90+t:2' : 'm:90+t:3';
+    const rows = await this.getSectorListRows(filter, 'f62', fields);
+    const value = this.mapSectorBoardRows(rows, kind);
     if (value.length < 100) {
       throw new Error('Sector market data contains too few boards');
     }
     this.sectorBoardCache.set(kind, { at: Date.now(), value });
+    return value;
+  }
+
+  public async getTopSectorBoards(
+    kind: SectorBoardKind,
+    limit = 20,
+    force = false
+  ): Promise<SectorBoard[]> {
+    const count = Math.max(1, Math.min(50, Math.floor(limit)));
+    const cached = this.topSectorBoardCache.get(kind);
+    if (
+      !force &&
+      cached &&
+      cached.value.length >= count &&
+      Date.now() - cached.at < SECTOR_TOP_CACHE_TTL
+    ) {
+      return cached.value.slice(0, count);
+    }
+    const fields =
+      'f2,f3,f4,f8,f12,f13,f14,f22,f62,f104,f105,f124,f127,f128,f136,f140,f141';
+    const filter = kind === 'industry' ? 'm:90+t:2' : 'm:90+t:3';
+    const payload = await this.getSectorListPage(filter, 'f3', fields, 1, count);
+    const value = this.mapSectorBoardRows(asArray<any>(payload.data.diff), kind)
+      .sort((left, right) => right.percent - left.percent)
+      .slice(0, count);
+    if (!value.length) {
+      throw new Error('Sector ranking data is unavailable');
+    }
+    this.topSectorBoardCache.set(kind, { at: Date.now(), value });
     return value;
   }
 
@@ -439,6 +540,7 @@ export class DataService {
           open: toNumber(item.f17),
           previousClose: toNumber(item.f18),
           amplitude: toNumber(item.f7),
+          volumeRatio: toNumber(item.f10),
           turnover: toNumber(item.f8),
           pe: toNumber(item.f9),
           pb: toNumber(item.f23),
@@ -696,9 +798,18 @@ export class DataService {
         employeeCount: '--',
         website: '',
         business: '用于反映对应股票市场或样本组合的整体价格表现。',
-        summary: '指数不是上市公司，不提供企业简介、概念和机构研报。',
+        summary: '指数不是上市公司，不提供企业简介、社区热度和个股异动解读。',
         concepts: ['市场指数'],
-        reports: [],
+        community: {
+          thsAvailable: false,
+          thsHeat: null,
+          thsRank: null,
+          thsRankChange: null,
+          thsPeriod: '1小时',
+          xueqiuAvailable: false,
+          xueqiuFollowers: null
+        },
+        anomalies: [],
         updatedAt: Date.now()
       };
       this.profileCache.set(normalized, { at: Date.now(), value });
@@ -715,25 +826,53 @@ export class DataService {
       'https://emweb.securities.eastmoney.com/PC_HSF10/CoreConception/PageAjax?code=' +
       prefix +
       digits;
-    const end = new Date();
-    const begin = new Date(end.getTime() - 180 * 86400000);
-    const dateText = (value: Date): string => value.toISOString().slice(0, 10);
-    const reportsUrl =
-      'https://reportapi.eastmoney.com/report/list?pageSize=12&pageNo=1&qType=0' +
-      '&orgCode=&code=' +
+    const thsHotUrl =
+      'https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/stock' +
+      '?stock_type=a&type=hour&list_type=normal';
+    const xueqiuSymbol = prefix + digits;
+    const xueqiuUrl =
+      'https://xueqiu.com/service/v5/stock/screener/screen' +
+      '?category=CN&size=1&order=desc&order_by=follow&only_count=0&page=1&symbol=' +
+      encodeURIComponent(xueqiuSymbol);
+    const thsMarket = normalized.startsWith('sh')
+      ? '17'
+      : normalized.startsWith('bj')
+        ? '151'
+        : '33';
+    const anomalyLatestUrl =
+      'https://dq.10jqka.com.cn/fuyao/transaction_history/service/v1/get/' +
+      thsMarket +
+      '_' +
       digits +
-      '&industryCode=&industry=&rating=&ratingChange=&beginTime=' +
-      dateText(begin) +
-      '&endTime=' +
-      dateText(end) +
-      '&fields=&_=' +
-      String(Date.now());
+      '.txt';
+    const anomalyHistoryUrl = 'https://flow.10jqka.com.cn/anomaly/v1/history';
+    const anomalyHistoryReferer =
+      'https://flow.10jqka.com.cn/app/anomaly_analysis/history?marketId=' +
+      thsMarket +
+      '&thsHqCode=' +
+      digits;
 
-    const [companyResult, conceptResult, reportsResult] = await Promise.allSettled([
-      this.getJson<any>(companyUrl, 15000),
-      this.getJson<any>(conceptUrl, 15000),
-      this.getJson<any>(reportsUrl, 15000)
-    ]);
+    const [
+      companyResult,
+      conceptResult,
+      thsHotResult,
+      xueqiuResult,
+      anomalyHistoryResult,
+      anomalyLatestResult
+    ] =
+      await Promise.allSettled([
+        this.getJson<any>(companyUrl, 15000),
+        this.getJson<any>(conceptUrl, 15000),
+        this.getJson<any>(thsHotUrl, 15000),
+        this.getJson<any>(xueqiuUrl, 15000),
+        this.postJson<any>(
+          anomalyHistoryUrl,
+          { thsHqCode: digits, marketId: thsMarket, count: 31 },
+          anomalyHistoryReferer,
+          15000
+        ),
+        this.getJson<any>(anomalyLatestUrl, 15000)
+      ]);
     const company = companyResult.status === 'fulfilled' ? companyResult.value?.jbzl || {} : {};
     const boardRows =
       conceptResult.status === 'fulfilled' ? asArray<any>(conceptResult.value?.ssbk) : [];
@@ -746,26 +885,48 @@ export class DataService {
           .filter(Boolean)
       )
     ).slice(0, 24);
-    const reportRows =
-      reportsResult.status === 'fulfilled' ? asArray<any>(reportsResult.value?.data) : [];
-    const reports: ResearchReport[] = reportRows.map((item) => {
-      const rating = String(item.emRatingName || item.sRatingName || '--');
-      const previousRating = String(item.lastEmRatingName || '--');
-      return {
-        date: String(item.publishDate || '').slice(0, 10),
-        title: String(item.title || '机构研报'),
-        organization: String(item.orgSName || item.orgName || '--'),
-        rating,
-        previousRating,
-        ratingChange:
-          previousRating === '--' ? '首次' : rating === previousRating ? '维持' : '调整',
-        targetPrice: String(item.indvAimPriceT || item.indvAimPriceL || '--'),
-        researcher: String(item.researcher || '--'),
-        url: item.infoCode
-          ? 'https://data.eastmoney.com/report/info/' + String(item.infoCode) + '.html'
-          : ''
-      };
-    });
+    const thsRows =
+      thsHotResult.status === 'fulfilled'
+        ? asArray<any>(thsHotResult.value?.data?.stock_list)
+        : [];
+    const thsRow = thsRows.find((item) => String(item?.code || '') === digits);
+    const xueqiuRows =
+      xueqiuResult.status === 'fulfilled'
+        ? asArray<any>(xueqiuResult.value?.data?.list)
+        : [];
+    const xueqiuRow = xueqiuRows.find(
+      (item) => String(item?.symbol || '').toUpperCase() === xueqiuSymbol
+    );
+    const historyRows =
+      anomalyHistoryResult.status === 'fulfilled'
+        ? asArray<any>(anomalyHistoryResult.value?.data?.anomalyAnalysisList)
+        : [];
+    const anomalyRows = historyRows.length
+      ? historyRows
+      : anomalyLatestResult.status === 'fulfilled'
+        ? asArray<any>(anomalyLatestResult.value?.data?.anomalyAnalysisList)
+        : [];
+    const anomalyCutoffDate = oneMonthAgoShanghaiDateKey();
+    const anomalies = anomalyRows
+      .map((item, index) => {
+        const keywords = asArray<unknown>(item?.keywordList)
+          .map((keyword) => String(keyword || '').trim())
+          .filter(Boolean);
+        return {
+          id: String(item?.id || digits + '-' + String(index)),
+          date: String(item?.date || '').slice(0, 10),
+          title: keywords.join(' · ') || String(item?.tagName || '异动解读'),
+          tagName: String(item?.tagName || '异动'),
+          content: String(item?.reason || '').trim(),
+          keywords
+        };
+      })
+      .filter(
+        (item) =>
+          item.content.length > 0 &&
+          /^\d{4}-\d{2}-\d{2}$/.test(item.date) &&
+          item.date >= anomalyCutoffDate
+      );
     const industry = String(company.sshy || rankOne?.BOARD_NAME || '其他行业');
     const subIndustry = String(rankTwo?.BOARD_NAME || company.sszjhhy || industry);
     const value: StockProfile = {
@@ -783,7 +944,16 @@ export class DataService {
       business: String(company.jyfw || company.zyfw || '暂无主营业务信息。'),
       summary: String(company.gsjj || '暂无公司简介。').trim(),
       concepts: concepts.length ? concepts : [industry],
-      reports,
+      community: {
+        thsAvailable: thsHotResult.status === 'fulfilled' && Array.isArray(thsHotResult.value?.data?.stock_list),
+        thsHeat: thsRow ? toNumber(thsRow.rate) : null,
+        thsRank: thsRow ? toNumber(thsRow.order || thsRow.display_order) : null,
+        thsRankChange: thsRow ? toNumber(thsRow.hot_rank_chg) : null,
+        thsPeriod: '1小时',
+        xueqiuAvailable: xueqiuResult.status === 'fulfilled' && Boolean(xueqiuResult.value?.data),
+        xueqiuFollowers: xueqiuRow ? toNumber(xueqiuRow.follow) : null
+      },
+      anomalies,
       updatedAt: Date.now()
     };
     this.profileCache.set(normalized, { at: Date.now(), value });

@@ -6,7 +6,16 @@
   var state = {
     tab: restored.tab || 'watch',
     selectedCode: restored.selectedCode || '',
-    snapshot: { watchlist: [], holdings: [], quotes: [], updatedAt: 0 },
+    snapshot: {
+      watchlist: [],
+      indexCodes: [],
+      watchGroups: [],
+      watchGroupAssignments: {},
+      holdings: [],
+      quotes: [],
+      sortMode: 0,
+      updatedAt: 0
+    },
     selectionQuote: null,
     profile: null,
     profileLoading: true,
@@ -106,13 +115,7 @@
     if (!current) {
       return '--';
     }
-    if (current >= 10000) {
-      return current.toFixed(1);
-    }
-    if (current >= 100) {
-      return current.toFixed(2);
-    }
-    return current.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+    return current.toFixed(2);
   }
 
   function money(value) {
@@ -169,14 +172,9 @@
   }
 
   function isIndex(code) {
-    return [
-      'sh000001',
-      'sh000300',
-      'sh000016',
-      'sh000688',
-      'sz399001',
-      'sz399006'
-    ].indexOf(code) >= 0;
+    return (state.snapshot.indexCodes || []).indexOf(code) >= 0 ||
+      /^sh(?:000|930|931|932|950|980|990)\d{3}$/.test(code) ||
+      /^sz399\d{3}$/.test(code);
   }
 
   function showToast(message, isError) {
@@ -261,6 +259,18 @@
       return !holdingSet[code] && !isIndex(code);
     });
     var indices = state.snapshot.watchlist.filter(isIndex);
+    var watchGroups = state.snapshot.watchGroups || [];
+    var assignments = state.snapshot.watchGroupAssignments || {};
+    var validGroups = Object.create(null);
+    watchGroups.forEach(function (group) {
+      validGroups[group.id] = true;
+    });
+
+    function memberships(code) {
+      var saved = assignments[code];
+      var values = Array.isArray(saved) ? saved : saved ? [saved] : [];
+      return values.length ? values : ['default'];
+    }
 
     function renderGroup(title, codes) {
       var visible = codes.filter(function (code) {
@@ -311,9 +321,22 @@
       );
     }
 
+    var defaultStocks = regular.filter(function (code) {
+      return memberships(code).indexOf('default') >= 0;
+    });
     container.innerHTML =
       renderGroup('我的持仓', holdingCodes) +
-      renderGroup('A股', regular) +
+      renderGroup('自选股', defaultStocks) +
+      watchGroups
+        .map(function (group) {
+          return renderGroup(
+            group.name,
+            regular.filter(function (code) {
+              return validGroups[group.id] && memberships(code).indexOf(group.id) >= 0;
+            })
+          );
+        })
+        .join('') +
       renderGroup('指数', indices);
     byId('stockCount').textContent = String(state.snapshot.watchlist.length);
     byId('quoteUpdateText').textContent = state.snapshot.updatedAt
@@ -384,55 +407,6 @@
     }
   }
 
-  function normalizeReports(profile) {
-    var source = firstValue(profile, ['reports', 'organizationReports', 'researchReports'], []);
-    return asList(source)
-      .map(function (report) {
-        if (Array.isArray(report)) {
-          var values = report.map(function (cell) {
-            if (cell && typeof cell === 'object') {
-              return firstValue(cell, ['value', 'content', 'text', 'title'], '--');
-            }
-            return cell;
-          });
-          return {
-            date: values[0],
-            rating: values[1],
-            previousRating: values[2],
-            direction: values[3],
-            targetPrice: values[4],
-            analyst: values[5],
-            institutionRating: values[6]
-          };
-        }
-        if (!report || typeof report !== 'object') {
-          return null;
-        }
-        return {
-          date: firstValue(report, ['date', 'reportDate', 'publishDate', 'time'], '--'),
-          rating: firstValue(report, ['latestRating', 'rating', 'currentRating'], '--'),
-          previousRating: firstValue(report, ['previousRating', 'lastRating'], '--'),
-          direction: firstValue(report, ['changeDirection', 'ratingChange', 'direction'], '--'),
-          targetPrice: firstValue(report, ['targetPrice', 'priceTarget'], '--'),
-          analyst: firstValue(report, ['analyst', 'researcher', 'author'], '--'),
-          institutionRating: firstValue(
-            report,
-            [
-              'organization',
-              'institution',
-              'institutionRating',
-              'consensusRating',
-              'leekRating',
-              'organizationRating'
-            ],
-            '--'
-          )
-        };
-      })
-      .filter(Boolean)
-      .slice(0, 30);
-  }
-
   function renderProfileConcepts(profile) {
     var concepts = asList(firstValue(profile, ['concepts', 'concept', 'tags'], []));
     var industry = firstValue(profile, ['industry', 'sector'], '');
@@ -462,29 +436,26 @@
       : '<span class="empty-inline">-- 暂无概念资料 --</span>';
   }
 
-  function renderProfileReports(profile) {
-    var reports = normalizeReports(profile);
-    byId('profileReportCount').textContent = reports.length + ' 条研报';
-    byId('profileReportsEmpty').classList.toggle('hidden', reports.length > 0);
-    byId('profileReports').innerHTML = reports
-      .map(function (report) {
+  function renderProfileAnomalies(profile) {
+    var anomalies = asList(firstValue(profile, ['anomalies', 'anomalyInterpretations'], []))
+      .filter(function (item) {
+        return item && typeof item === 'object' && String(item.content || '').trim();
+      });
+    byId('profileAnomalyCount').textContent = anomalies.length + ' 条解读';
+    byId('profileAnomaliesEmpty').classList.toggle('hidden', anomalies.length > 0);
+    byId('profileAnomalies').innerHTML = anomalies
+      .map(function (item) {
         return (
-          '<tr>' +
-          '<td>' +
-          escapeHtml(report.date || '--') +
-          '</td><td>' +
-          escapeHtml(report.rating || '--') +
-          '</td><td>' +
-          escapeHtml(report.previousRating || '--') +
-          '</td><td>' +
-          escapeHtml(report.direction || '--') +
-          '</td><td>' +
-          escapeHtml(report.targetPrice || '--') +
-          '</td><td><a href="#" tabindex="-1">' +
-          escapeHtml(report.analyst || '--') +
-          '</a></td><td>' +
-          escapeHtml(report.institutionRating || '--') +
-          '</td></tr>'
+          '<article class="anomaly-item">' +
+          '<div class="anomaly-meta"><span>' +
+          escapeHtml(item.tagName || '异动') +
+          '</span><time>' +
+          escapeHtml(item.date || '--') +
+          '</time></div><h3>' +
+          escapeHtml(item.title || '异动解读') +
+          '</h3><p>' +
+          escapeHtml(item.content) +
+          '</p></article>'
         );
       })
       .join('');
@@ -495,21 +466,33 @@
     if (!community || typeof community !== 'object') {
       community = {};
     }
-    var ths = firstValue(
-      community,
-      ['ths', 'tonghuashun', 'hot', 'popularity'],
-      firstValue(profile, ['hot', 'popularity'], '--')
-    );
-    var xueqiu = firstValue(
-      community,
-      ['xueqiu', 'xueqiuFollowers', 'followers'],
-      firstValue(profile, ['xueqiuFollowers'], '--')
-    );
+    var thsHeat = community.thsHeat;
+    var thsRank = community.thsRank;
+    var thsRankChange = number(community.thsRankChange);
+    var ths = '--';
+    if (community.thsAvailable === true) {
+      ths = Number.isFinite(Number(thsHeat)) && Number(thsHeat) > 0
+        ? compact(thsHeat) +
+          (Number(thsRank) > 0
+            ? ' · 第' + Number(thsRank).toFixed(0) + '名' +
+              (thsRankChange ? (thsRankChange > 0 ? ' ↑' : ' ↓') + Math.abs(thsRankChange) : '')
+            : '')
+        : '未进 TOP100';
+    } else if (profile && profile.code) {
+      ths = '暂不可用';
+    }
+    var followers = community.xueqiuFollowers;
+    var xueqiu = '--';
+    if (community.xueqiuAvailable === true) {
+      xueqiu = Number.isFinite(Number(followers)) ? compact(followers) : '暂无数据';
+    } else if (profile && profile.code) {
+      xueqiu = '暂不可用';
+    }
     byId('profileCommunity').innerHTML =
-      '<p><span>同花顺人气热度</span><strong>' +
-      escapeHtml(ths === '--' ? ths : compact(ths)) +
-      '</strong></p><p><span>雪球社区关注量</span><strong>' +
-      escapeHtml(xueqiu === '--' ? xueqiu : compact(xueqiu)) +
+      '<p><span>同花顺 1 小时热度</span><strong>' +
+      escapeHtml(ths) +
+      '</strong></p><p><span>雪球关注人数</span><strong>' +
+      escapeHtml(xueqiu) +
       '</strong></p>';
   }
 
@@ -518,7 +501,7 @@
     if (state.profileLoading) {
       byId('profileSubtitle').textContent = '正在获取公开资料';
       renderProfileConcepts({});
-      renderProfileReports({});
+      renderProfileAnomalies({});
       renderProfileCommunity({});
       return;
     }
@@ -573,7 +556,7 @@
     byId('profileBusiness').textContent = String(business || '--');
     byId('profileDescription').textContent = String(description || '--');
     renderProfileConcepts(profile);
-    renderProfileReports(profile);
+    renderProfileAnomalies(profile);
     renderProfileCommunity(profile);
   }
 
@@ -2017,13 +2000,7 @@
     }
     var deleteCode = target.getAttribute('data-delete-holding');
     if (deleteCode) {
-      var holding = state.snapshot.holdings.find(function (item) {
-        return item.code === deleteCode;
-      });
-      var name = holding ? holding.name : deleteCode;
-      if (window.confirm('确认删除“' + name + '”的本地持仓记录？')) {
-        post({ type: 'deleteHolding', code: deleteCode });
-      }
+      post({ type: 'deleteHolding', code: deleteCode });
       return;
     }
     var newsUrl = target.getAttribute('data-news-url');
@@ -2252,7 +2229,7 @@
         var loadingSectorCode = String(message.bkCode || message.code || '').toUpperCase();
         state.sectorDetail = {
           code: loadingSectorCode,
-          kind: (findSectorBoard(loadingSectorCode) || {}).kind,
+          kind: message.kind || (findSectorBoard(loadingSectorCode) || {}).kind,
           data: []
         };
         if (byId('sectorDetailEmpty')) {
@@ -2265,7 +2242,7 @@
         var detailSectorCode = String(message.bkCode || message.code || '').toUpperCase();
         state.sectorDetail = {
           code: detailSectorCode,
-          kind: (findSectorBoard(detailSectorCode) || {}).kind,
+          kind: message.kind || (findSectorBoard(detailSectorCode) || {}).kind,
           data: message.data || []
         };
         state.sectorUpdatedAt = message.updatedAt || Date.now();

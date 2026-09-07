@@ -67,6 +67,10 @@ export class CenterPanel {
     await current.autoRefresh(allowMarketRequest);
   }
 
+  public static isVisible(): boolean {
+    return Boolean(CenterPanel.current?.ready && CenterPanel.current.panel.visible);
+  }
+
   public static createOrShow(
     context: vscode.ExtensionContext,
     stateStore: StateStore,
@@ -156,6 +160,27 @@ export class CenterPanel {
     });
   }
 
+  public openSectorBoard(kind: SectorBoardKind, code: string): void {
+    const normalized = this.normalizeSectorCode(code);
+    if (!VALID_SECTOR_KINDS.has(kind) || !normalized) {
+      return;
+    }
+    this.activeTab = 'sector';
+    this.sectorView = 'detail';
+    this.sectorKind = kind;
+    this.selectedSectorCode = normalized;
+    if (!this.ready) {
+      return;
+    }
+    this.post({ type: 'navigate', tab: 'sector' });
+    void this.loadSectorDetail(normalized, false).catch((error) => {
+      this.post({
+        type: 'error',
+        message: error instanceof Error ? error.message : String(error)
+      });
+    });
+  }
+
   private async handleMessage(message: any): Promise<void> {
     try {
       switch (message?.type) {
@@ -224,6 +249,9 @@ export class CenterPanel {
             this.selectedSectorCode = '';
           } else if (mode === 'detail') {
             this.sectorView = 'detail';
+            if (VALID_SECTOR_KINDS.has(kind as SectorBoardKind)) {
+              this.sectorKind = kind as SectorBoardKind;
+            }
             const code = this.normalizeSectorCode(message.code);
             if (code) {
               this.selectedSectorCode = code;
@@ -252,6 +280,10 @@ export class CenterPanel {
           const bkCode = this.normalizeSectorCode(message.bkCode || message.code);
           if (bkCode) {
             this.sectorView = 'detail';
+            const kind = String(message.kind || '') as SectorBoardKind;
+            if (VALID_SECTOR_KINDS.has(kind)) {
+              this.sectorKind = kind;
+            }
             this.selectedSectorCode = bkCode;
             await this.loadSectorDetail(bkCode, Boolean(message.force));
           }
@@ -524,7 +556,8 @@ export class CenterPanel {
   private async loadSectorDetail(bkCode: string, force: boolean): Promise<void> {
     const requestId = ++this.sectorDetailRequestId;
     this.lastSectorRequestAt = Date.now();
-    this.post({ type: 'sectorDetailLoading', bkCode });
+    const kind = this.sectorKind === 'concept' ? 'concept' : 'industry';
+    this.post({ type: 'sectorDetailLoading', bkCode, kind });
     const data = await this.dataService.getSectorConstituents(bkCode, force);
     if (
       requestId !== this.sectorDetailRequestId ||
@@ -533,7 +566,7 @@ export class CenterPanel {
     ) {
       return;
     }
-    this.post({ type: 'sectorDetail', bkCode, data, updatedAt: Date.now() });
+    this.post({ type: 'sectorDetail', bkCode, kind, data, updatedAt: Date.now() });
   }
 
   private async toggleSectorFollow(code: string): Promise<void> {
@@ -585,12 +618,25 @@ export class CenterPanel {
   }
 
   private async deleteHolding(code: string): Promise<void> {
-    if (!isAShareCode(code.toLowerCase())) {
+    const normalized = code.toLowerCase();
+    if (!isAShareCode(normalized)) {
       return;
     }
-    await this.stateStore.deleteHolding(code);
+    const holding = this.stateStore.getHoldings().find((item) => item.code === normalized);
+    if (!holding) {
+      return;
+    }
+    const answer = await vscode.window.showWarningMessage(
+      '确认删除“' + holding.name + '”的本地持仓记录？',
+      { modal: true },
+      '删除'
+    );
+    if (answer !== '删除') {
+      return;
+    }
+    await this.stateStore.deleteHolding(normalized);
     await this.stockProvider.refresh(false);
-    this.post({ type: 'holdingDeleted', code });
+    this.post({ type: 'holdingDeleted', code: normalized });
   }
 
   private async openCloudStock(code: string): Promise<void> {
@@ -614,7 +660,7 @@ export class CenterPanel {
     if (!isAShareCode(normalized)) {
       return;
     }
-    await this.stateStore.addWatch(normalized);
+    await this.stateStore.addWatch(normalized, 'stock');
     await this.stockProvider.refresh(false);
     this.post({ type: 'sectorStockAdded', code: normalized });
   }

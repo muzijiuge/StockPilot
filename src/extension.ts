@@ -5,9 +5,10 @@ import { EastmoneyProxyServer } from './eastmoneyProxyServer';
 import { getChinaMarketState } from './marketHours';
 import { pickAStock } from './pickStock';
 import { HomeProvider, StockNode, StockProvider } from './providers';
+import { SidebarViewProvider } from './sidebarView';
 import { StateStore } from './stateStore';
 import { StockTrendPanel } from './stockTrendPanel';
-import { AppSnapshot, Holding, Quote, isAShareCode } from './types';
+import { AppSnapshot, Holding, Quote, WatchGroup, isAShareCode } from './types';
 
 function extractCode(value: unknown): string | undefined {
   if (typeof value === 'string' && isAShareCode(value.toLowerCase())) {
@@ -15,6 +16,32 @@ function extractCode(value: unknown): string | undefined {
   }
   if (value instanceof StockNode) {
     return value.code;
+  }
+  if (value && typeof value === 'object' && 'code' in value) {
+    const code = String((value as { code?: unknown }).code || '').toLowerCase();
+    return isAShareCode(code) ? code : undefined;
+  }
+  return undefined;
+}
+
+function extractItemKind(value: unknown): 'holding' | 'stock' | 'index' | undefined {
+  if (value instanceof StockNode) {
+    return value.kind;
+  }
+  if (value && typeof value === 'object' && 'kind' in value) {
+    const kind = String((value as { kind?: unknown }).kind || '');
+    return kind === 'holding' || kind === 'stock' || kind === 'index' ? kind : undefined;
+  }
+  return undefined;
+}
+
+function extractGroupId(value: unknown): string | undefined {
+  if (typeof value === 'string' && /^group-[a-z0-9-]{6,64}$/.test(value)) {
+    return value;
+  }
+  if (value && typeof value === 'object' && 'groupId' in value) {
+    const groupId = String((value as { groupId?: unknown }).groupId || '').toLowerCase();
+    return /^group-[a-z0-9-]{6,64}$/.test(groupId) ? groupId : undefined;
   }
   return undefined;
 }
@@ -32,11 +59,14 @@ function computeHoldingTotals(snapshot: AppSnapshot): {
   floating: number;
   daily: number;
   marketValue: number;
+  totalCost: number;
+  profitPercent: number | null;
   pricedHoldings: number;
 } {
   const quotes = new Map(snapshot.quotes.map((item) => [item.code, item]));
-  return snapshot.holdings.reduce(
+  const totals = snapshot.holdings.reduce(
     (result, holding) => {
+      result.totalCost += holding.amount * holding.cost;
       const quote = quotes.get(holding.code);
       if (!quote || quote.price <= 0) {
         return result;
@@ -49,8 +79,95 @@ function computeHoldingTotals(snapshot: AppSnapshot): {
       result.pricedHoldings += 1;
       return result;
     },
-    { floating: 0, daily: 0, marketValue: 0, pricedHoldings: 0 }
+    { floating: 0, daily: 0, marketValue: 0, totalCost: 0, pricedHoldings: 0 }
   );
+  return {
+    ...totals,
+    profitPercent:
+      totals.pricedHoldings === snapshot.holdings.length && totals.totalCost > 0
+        ? (totals.floating / totals.totalCost) * 100
+        : null
+  };
+}
+
+async function inputWatchGroupName(
+  title: string,
+  value = ''
+): Promise<string | undefined> {
+  return vscode.window.showInputBox({
+    title,
+    prompt: '分组名称（1–24 个字符）',
+    value,
+    ignoreFocusOut: true,
+    validateInput(input) {
+      const name = input.trim();
+      return name.length >= 1 && name.length <= 24
+        ? undefined
+        : '请输入 1–24 个字符的分组名称';
+    }
+  });
+}
+
+async function createWatchGroup(
+  stateStore: StateStore,
+  stockProvider: StockProvider,
+  title = '新建自选分组'
+): Promise<WatchGroup | undefined> {
+  const name = await inputWatchGroupName(title);
+  if (name === undefined) {
+    return undefined;
+  }
+  const group = await stateStore.createWatchGroup(name);
+  stockProvider.notifyStateChanged();
+  return group;
+}
+
+async function pickWatchGroupTarget(
+  stateStore: StateStore,
+  stockProvider: StockProvider,
+  title: string,
+  currentGroupIds: string[] = []
+): Promise<{ groupId?: string; name: string } | undefined> {
+  type GroupPick = vscode.QuickPickItem & {
+    groupId?: string;
+    groupName?: string;
+    create?: boolean;
+  };
+  const items: GroupPick[] = [
+    {
+      label: '$(list-unordered) 自选股',
+      description: currentGroupIds.includes('default') ? '已存在' : undefined,
+      groupId: '',
+      groupName: '自选股'
+    },
+    ...stateStore.getWatchGroups().map((group) => ({
+      label: '$(folder) ' + group.name,
+      description: currentGroupIds.includes(group.id) ? '已存在' : undefined,
+      groupId: group.id,
+      groupName: group.name
+    })),
+    {
+      label: '$(new-folder) 新建分组…',
+      alwaysShow: true,
+      create: true
+    }
+  ];
+  const selected = await vscode.window.showQuickPick(items, {
+    title,
+    placeHolder: '选择 A股 下的目标分组',
+    ignoreFocusOut: true
+  });
+  if (!selected) {
+    return undefined;
+  }
+  if (selected.create) {
+    const group = await createWatchGroup(stateStore, stockProvider, '新建自选分组');
+    return group ? { groupId: group.id, name: group.name } : undefined;
+  }
+  return {
+    groupId: selected.groupId || undefined,
+    name: selected.groupName || '自选股'
+  };
 }
 
 async function inputHolding(
@@ -116,6 +233,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const dataService = new DataService();
   const eastmoneyProxy = new EastmoneyProxyServer();
   const stockProvider = new StockProvider(stateStore, dataService);
+  const sidebarProvider = new SidebarViewProvider(context, stockProvider, dataService);
   const homeProvider = new HomeProvider();
 
   context.subscriptions.push({ dispose: () => eastmoneyProxy.dispose() });
@@ -129,11 +247,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
   });
 
-  const stockTree = vscode.window.createTreeView('aShareLeek.stock', {
-    treeDataProvider: stockProvider,
-    showCollapseAll: true,
-    canSelectMany: false
-  });
+  const stockViewRegistration = vscode.window.registerWebviewViewProvider(
+    'aShareLeek.stock',
+    sidebarProvider,
+    { webviewOptions: { retainContextWhenHidden: true } }
+  );
   const homeTree = vscode.window.createTreeView('aShareLeek.home', {
     treeDataProvider: homeProvider,
     showCollapseAll: false
@@ -184,17 +302,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           totals.floating >= 0 ? 'charts.red' : 'charts.green'
         );
         holdingStatus.tooltip =
-          '持仓市值：¥' +
+          '建仓成本：¥' +
+          totals.totalCost.toFixed(2) +
+          '\n持仓市值：¥' +
           totals.marketValue.toFixed(2) +
           '\n浮动盈亏：' +
           money(totals.floating) +
+          '\n盈亏百分比：' +
+          (totals.profitPercent === null ? '--' : signed(totals.profitPercent, 2, '%')) +
           '\n当日盈亏：' +
           money(totals.daily) +
           '\n点击打开资产管理';
       } else {
         holdingStatus.text = '$(briefcase) 持仓 --';
         holdingStatus.color = undefined;
-        holdingStatus.tooltip = '部分持仓暂无最近有效报价\n点击打开资产管理';
+        holdingStatus.tooltip =
+          '建仓成本：¥' +
+          totals.totalCost.toFixed(2) +
+          '\n部分持仓暂无最近有效报价\n点击打开资产管理';
       }
       holdingStatus.show();
     } else {
@@ -207,7 +332,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     stockProvider,
-    stockTree,
+    sidebarProvider,
+    stockViewRegistration,
     homeTree,
     marketStatus,
     holdingStatus,
@@ -248,15 +374,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         'cloud'
       )
     ),
-    vscode.commands.registerCommand('aShareLeek.openSector', () =>
-      CenterPanel.createOrShow(
+    vscode.commands.registerCommand('aShareLeek.openSector', (value?: unknown) => {
+      const panel = CenterPanel.createOrShow(
         context,
         stateStore,
         dataService,
         stockProvider,
         'sector'
-      )
-    ),
+      );
+      if (value && typeof value === 'object' && 'code' in value) {
+        const board = value as { code?: unknown; kind?: unknown };
+        const kind = String(board.kind || '') === 'concept' ? 'concept' : 'industry';
+        panel.openSectorBoard(kind, String(board.code || ''));
+      }
+    }),
     vscode.commands.registerCommand('aShareLeek.openStock', async (value?: unknown) => {
       const code = extractCode(value);
       if (!code) {
@@ -275,7 +406,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           location: vscode.ProgressLocation.Window,
           title: '正在刷新 A 股行情…'
         },
-        () => stockProvider.refresh(true)
+        () => Promise.all([stockProvider.refresh(true), sidebarProvider.refreshSectors(true)])
       );
       vscode.window.setStatusBarMessage('A 股行情已刷新', 1800);
     }),
@@ -289,12 +420,127 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (!picked) {
           return;
         }
-        await stateStore.addWatch(picked.code);
+        const isIndex = picked.marketLabel.includes('指数');
+        const alreadyWatched = stateStore.hasWatch(picked.code);
+        const existingGroups = stateStore.getWatchGroupAssignments()[picked.code] ||
+          (alreadyWatched ? ['default'] : []);
+        const targetGroup = isIndex
+          ? undefined
+          : await pickWatchGroupTarget(
+              stateStore,
+              stockProvider,
+              '添加“' + picked.name + '”到分组',
+              existingGroups
+            );
+        if (!isIndex && !targetGroup) {
+          return;
+        }
+        await stateStore.addWatch(picked.code, isIndex ? 'index' : 'stock');
+        if (!isIndex) {
+          if (alreadyWatched) {
+            await stateStore.addWatchToGroup(picked.code, targetGroup?.groupId);
+          } else {
+            await stateStore.replaceWatchGroups(picked.code, targetGroup?.groupId);
+          }
+        }
         await stockProvider.refresh(false);
-        vscode.window.showInformationMessage('已添加 A 股：' + picked.name);
+        vscode.window.showInformationMessage(
+          '已添加 A 股：' +
+            picked.name +
+            (isIndex ? '（指数）' : '（' + targetGroup?.name + '）')
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         vscode.window.showErrorMessage('添加股票失败：' + message);
+      }
+    }),
+    vscode.commands.registerCommand('aShareLeek.addWatchGroup', async () => {
+      try {
+        const group = await createWatchGroup(stateStore, stockProvider);
+        if (group) {
+          vscode.window.showInformationMessage('已创建自选分组：' + group.name);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage('创建分组失败：' + message);
+      }
+    }),
+    vscode.commands.registerCommand('aShareLeek.moveWatchToGroup', async (value?: unknown) => {
+      const code = extractCode(value);
+      if (!code || stateStore.isIndex(code)) {
+        return;
+      }
+      try {
+        const hasSourceGroup =
+          Boolean(value && typeof value === 'object') &&
+          Object.prototype.hasOwnProperty.call(value, 'sourceGroupId');
+        const sourceGroupId = hasSourceGroup
+          ? String((value as { sourceGroupId?: unknown }).sourceGroupId || '').toLowerCase() ||
+            undefined
+          : undefined;
+        const hasDirectGroup =
+          Boolean(value && typeof value === 'object') &&
+          Object.prototype.hasOwnProperty.call(value, 'groupId');
+        if (hasDirectGroup) {
+          const directGroupId = String(
+            (value as { groupId?: unknown }).groupId || ''
+          ).toLowerCase();
+          await stateStore.moveWatchBetweenGroups(
+            code,
+            sourceGroupId,
+            directGroupId || undefined
+          );
+          stockProvider.notifyStateChanged();
+          return;
+        }
+        const target = await pickWatchGroupTarget(
+          stateStore,
+          stockProvider,
+          '添加自选股票到分组',
+          stateStore.getWatchGroupAssignments()[code] || ['default']
+        );
+        if (!target) {
+          return;
+        }
+        await stateStore.moveWatchBetweenGroups(code, sourceGroupId, target.groupId);
+        stockProvider.notifyStateChanged();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage('添加到自选分组失败：' + message);
+      }
+    }),
+    vscode.commands.registerCommand('aShareLeek.renameWatchGroup', async (value?: unknown) => {
+      const groupId = extractGroupId(value);
+      const group = stateStore.getWatchGroups().find((item) => item.id === groupId);
+      if (!group) {
+        return;
+      }
+      try {
+        const name = await inputWatchGroupName('重命名自选分组', group.name);
+        if (name === undefined) {
+          return;
+        }
+        await stateStore.renameWatchGroup(group.id, name);
+        stockProvider.notifyStateChanged();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage('重命名分组失败：' + message);
+      }
+    }),
+    vscode.commands.registerCommand('aShareLeek.deleteWatchGroup', async (value?: unknown) => {
+      const groupId = extractGroupId(value);
+      const group = stateStore.getWatchGroups().find((item) => item.id === groupId);
+      if (!group) {
+        return;
+      }
+      const answer = await vscode.window.showWarningMessage(
+        '删除自选分组“' + group.name + '”？股票会保留在其他已有分组；没有其他分组的股票会回到“自选股”。',
+        { modal: true },
+        '删除分组'
+      );
+      if (answer === '删除分组') {
+        await stateStore.deleteWatchGroup(group.id);
+        stockProvider.notifyStateChanged();
       }
     }),
     vscode.commands.registerCommand('aShareLeek.removeStock', async (value?: unknown) => {
@@ -302,15 +548,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!code) {
         return;
       }
+      const kind = extractItemKind(value) || 'stock';
       const quote = stockProvider.getQuote(code);
+      const holding = stateStore.getHoldings().find((item) => item.code === code);
+      const name = holding?.name || quote?.name || code;
+      const isHolding = kind === 'holding';
+      const hasGroupId =
+        kind === 'stock' &&
+        Boolean(value && typeof value === 'object') &&
+        Object.prototype.hasOwnProperty.call(value, 'groupId');
+      const groupId = hasGroupId
+        ? String((value as { groupId?: unknown }).groupId || '').toLowerCase() || undefined
+        : undefined;
       const answer = await vscode.window.showWarningMessage(
-        '从自选列表移除“' + (quote?.name || code) + '”？',
+        isHolding
+          ? '删除“' + name + '”的本地持仓记录并从侧栏移除？'
+          : hasGroupId
+            ? '只从当前分组移除“' + name + '”？其他分组中的同一股票会保留。'
+          : '从' + (kind === 'index' ? '指数' : '自选') + '列表移除“' + name + '”？',
         { modal: true },
-        '移除'
+        isHolding ? '删除' : '移除'
       );
-      if (answer === '移除') {
-        await stateStore.removeWatch(code);
-        await stockProvider.refresh(false);
+      if (answer === (isHolding ? '删除' : '移除')) {
+        if (isHolding) {
+          await stateStore.deleteHolding(code);
+        }
+        if (hasGroupId) {
+          await stateStore.removeWatchFromGroup(code, groupId);
+          stockProvider.notifyStateChanged();
+        } else {
+          await stateStore.removeWatch(code);
+          await stockProvider.refresh(false);
+        }
       }
     }),
     vscode.commands.registerCommand('aShareLeek.setHolding', async (value?: unknown) => {
@@ -341,9 +610,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     requestOutsideTradingHours: boolean;
   } => {
     const configuration = vscode.workspace.getConfiguration('aShareLeek');
-    const configured = configuration.get<number>('refreshInterval', 5000);
+    const configured = configuration.get<number>('refreshInterval', 3000);
     return {
-      interval: Math.max(3000, Math.min(300000, Number(configured) || 5000)),
+      interval: Math.max(3000, Math.min(300000, Number(configured) || 3000)),
       requestOutsideTradingHours: configuration.get<boolean>(
         'requestOutsideTradingHours',
         false
@@ -358,7 +627,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     StockTrendPanel.updateRefreshState({ interval: settings.interval, allowed, market });
     try {
       if (allowed) {
-        await stockProvider.refresh(false);
+        if (sidebarProvider.isVisible() || CenterPanel.isVisible()) {
+          await stockProvider.refresh(false);
+        }
         await Promise.all([
           StockTrendPanel.autoRefreshVisible(),
           CenterPanel.autoRefreshVisible(true, market)
@@ -418,7 +689,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   updateStatusBar(stockProvider.getSnapshot());
   const startupSettings = getRefreshSettings();
   const startupMarket = getChinaMarketState();
-  if (startupMarket.isTradingTime || startupSettings.requestOutsideTradingHours) {
+  if (
+    (startupMarket.isTradingTime || startupSettings.requestOutsideTradingHours) &&
+    (sidebarProvider.isVisible() || CenterPanel.isVisible())
+  ) {
     void stockProvider.refresh(false);
   }
 

@@ -6,7 +6,6 @@ import {
   AppSnapshot,
   CenterTab,
   DEFAULT_NAMES,
-  INDEX_CODES,
   Quote
 } from './types';
 
@@ -18,7 +17,7 @@ class GroupNode extends vscode.TreeItem {
   public constructor(
     public readonly kind: GroupKind,
     label: string,
-    public readonly codes: string[],
+    public codes: string[],
     expanded: boolean
   ) {
     super(
@@ -27,42 +26,56 @@ class GroupNode extends vscode.TreeItem {
         ? vscode.TreeItemCollapsibleState.Expanded
         : vscode.TreeItemCollapsibleState.Collapsed
     );
+    this.id = kind;
     this.contextValue = 'category';
+  }
+
+  public update(label: string, codes: string[]): boolean {
+    const changed =
+      this.label !== label ||
+      this.codes.length !== codes.length ||
+      this.codes.some((code, index) => code !== codes[index]);
+    this.label = label;
+    this.codes = [...codes];
+    return changed;
   }
 }
 
 export class StockNode extends vscode.TreeItem {
   public constructor(
     public readonly code: string,
-    public readonly quote: Quote | undefined,
+    public quote: Quote | undefined,
     public readonly kind: 'stock' | 'holding' | 'index'
   ) {
-    const name = quote?.name || DEFAULT_NAMES[code] || code;
-    const percent = quote ? signed(quote.percent, 2, '%') : '--';
-    const price = quote && quote.price > 0 ? formatPrice(quote.price) : '--';
-    super(percent.padStart(8) + '   ' + price.padStart(9) + '   「' + name + '」');
+    super('');
+    this.id = kind + ':' + code;
     this.contextValue = kind;
     this.command = {
       command: 'aShareLeek.openStock',
       title: '查看 K 线',
       arguments: [code]
     };
+    this.update(quote);
+  }
+
+  public update(quote: Quote | undefined): void {
+    this.quote = quote;
+    const name = quote?.name || DEFAULT_NAMES[this.code] || this.code;
+    const percent = quote ? signed(quote.percent, 2, '%') : '--';
+    const price = quote && quote.price > 0 ? formatPrice(quote.price) : '--';
+    this.label = percent.padStart(8) + '   ' + price.padStart(9) + '   「' + name + '」';
     if (quote) {
       const isRise = quote.percent >= 0;
       this.iconPath = new vscode.ThemeIcon(
         isRise ? 'chevron-up' : 'chevron-down',
         new vscode.ThemeColor(isRise ? 'charts.red' : 'charts.green')
       );
-      this.tooltip = buildTooltip(quote, kind);
-      this.description = quote.updatedAt
-        ? new Date(quote.updatedAt).toLocaleTimeString('zh-CN', {
-            hour: '2-digit',
-            minute: '2-digit'
-          })
-        : undefined;
+      this.tooltip = buildTooltip(quote, this.kind);
+      this.description = undefined;
     } else {
       this.iconPath = new vscode.ThemeIcon('dash', new vscode.ThemeColor('descriptionForeground'));
       this.tooltip = name + '（等待行情）';
+      this.description = undefined;
     }
   }
 }
@@ -76,13 +89,7 @@ function formatPrice(value: number): string {
   if (!Number.isFinite(value) || value <= 0) {
     return '--';
   }
-  if (value >= 10000) {
-    return value.toFixed(1);
-  }
-  if (value >= 100) {
-    return value.toFixed(2);
-  }
-  return value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+  return value.toFixed(2);
 }
 
 function formatLarge(value: number): string {
@@ -117,7 +124,12 @@ function buildTooltip(quote: Quote, kind: string): vscode.MarkdownString {
   tooltip.appendMarkdown(
     '昨收 ' +
       formatPrice(quote.previousClose) +
-      '　成交量 ' +
+      '　量比 ' +
+      (quote.volumeRatio > 0 ? quote.volumeRatio.toFixed(2) : '--') +
+      '　换手率 ' +
+      quote.turnover.toFixed(2) +
+      '%\n\n' +
+      '成交量 ' +
       formatLarge(quote.volume) +
       '　成交额 ' +
       formatLarge(quote.amount) +
@@ -138,6 +150,12 @@ export class StockProvider implements vscode.TreeDataProvider<GroupNode | StockN
   private refreshCodesKey = '';
   private lastQuoteSnapshotSavedAt = 0;
   private lastQuoteSnapshotCodesKey = '';
+  private readonly groupNodes = [
+    new GroupNode('holdingGroup', '我的持仓 (0)', [], true),
+    new GroupNode('stockGroup', 'A股 (0)', [], true),
+    new GroupNode('indexGroup', '指数 (0)', [], false)
+  ];
+  private readonly stockNodes = new Map<string, StockNode>();
 
   public readonly onDidChangeTreeData = this.changeEmitter.event;
   public readonly onDidUpdateSnapshot = this.snapshotEmitter.event;
@@ -151,6 +169,7 @@ export class StockProvider implements vscode.TreeDataProvider<GroupNode | StockN
       this.quoteMap.set(quote.code, quote);
       this.refreshedAt = Math.max(this.refreshedAt, quote.updatedAt);
     }
+    this.updateGroups();
   }
 
   public dispose(): void {
@@ -168,38 +187,95 @@ export class StockProvider implements vscode.TreeDataProvider<GroupNode | StockN
       return [];
     }
     if (element instanceof GroupNode) {
-      return this.sortCodes(element.codes).map(
-        (code) =>
-          new StockNode(
-            code,
-            this.quoteMap.get(code),
-            element.kind === 'holdingGroup'
-              ? 'holding'
-              : element.kind === 'indexGroup'
-                ? 'index'
-                : 'stock'
-          )
-      );
+      return this.sortCodes(element.codes).map((code) => this.getStockNode(code, element.kind));
     }
+    this.updateGroups();
+    return this.groupNodes;
+  }
 
+  private getStockNode(code: string, groupKind: GroupKind): StockNode {
+    const kind =
+      groupKind === 'holdingGroup' ? 'holding' : groupKind === 'indexGroup' ? 'index' : 'stock';
+    const key = kind + ':' + code;
+    let node = this.stockNodes.get(key);
+    if (!node) {
+      node = new StockNode(code, this.quoteMap.get(code), kind);
+      this.stockNodes.set(key, node);
+    } else {
+      node.update(this.quoteMap.get(code));
+    }
+    return node;
+  }
+
+  private updateGroups(): boolean {
     const holdingCodes = this.stateStore.getHoldings().map((item) => item.code);
     const holdingSet = new Set(holdingCodes);
     const watchlist = this.stateStore.getWatchlist();
-    const stockCodes = watchlist.filter(
-      (code) => !holdingSet.has(code) && !INDEX_CODES.has(code)
+    const indexCodes = watchlist.filter((code) =>
+      this.stateStore.isIndex(code, this.quoteMap.get(code)?.name)
     );
-    const indexCodes = watchlist.filter((code) => INDEX_CODES.has(code));
-
-    return [
-      new GroupNode(
-        'holdingGroup',
-        '我的持仓 (' + holdingCodes.length + ')',
-        holdingCodes,
-        true
-      ),
-      new GroupNode('stockGroup', 'A股 (' + stockCodes.length + ')', stockCodes, true),
-      new GroupNode('indexGroup', '指数 (' + indexCodes.length + ')', indexCodes, false)
+    const indexSet = new Set(indexCodes);
+    const stockCodes = watchlist.filter(
+      (code) => !holdingSet.has(code) && !indexSet.has(code)
+    );
+    const definitions: Array<[string, string[]]> = [
+      ['我的持仓', holdingCodes],
+      ['A股', stockCodes],
+      ['指数', indexCodes]
     ];
+    let changed = false;
+    this.groupNodes.forEach((group, index) => {
+      const [title, codes] = definitions[index];
+      changed = group.update(title + ' (' + codes.length + ')', codes) || changed;
+    });
+    return changed;
+  }
+
+  private pruneStockNodes(): void {
+    const active = new Set<string>();
+    for (const group of this.groupNodes) {
+      const kind =
+        group.kind === 'holdingGroup' ? 'holding' : group.kind === 'indexGroup' ? 'index' : 'stock';
+      for (const code of group.codes) {
+        active.add(kind + ':' + code);
+      }
+    }
+    for (const key of this.stockNodes.keys()) {
+      if (!active.has(key)) {
+        this.stockNodes.delete(key);
+      }
+    }
+  }
+
+  private updateVisibleTree(previousOrders: Map<GroupKind, string>): void {
+    if (this.updateGroups()) {
+      this.pruneStockNodes();
+      this.changeEmitter.fire(undefined);
+      return;
+    }
+
+    for (const group of this.groupNodes) {
+      const order = this.sortCodes(group.codes).join(',');
+      if (previousOrders.get(group.kind) !== order) {
+        this.changeEmitter.fire(group);
+        continue;
+      }
+      for (const code of group.codes) {
+        const node = this.stockNodes.get(
+          (group.kind === 'holdingGroup'
+            ? 'holding'
+            : group.kind === 'indexGroup'
+              ? 'index'
+              : 'stock') +
+            ':' +
+            code
+        );
+        if (node) {
+          node.update(this.quoteMap.get(code));
+          this.changeEmitter.fire(node);
+        }
+      }
+    }
   }
 
   private sortCodes(codes: string[]): string[] {
@@ -215,8 +291,18 @@ export class StockProvider implements vscode.TreeDataProvider<GroupNode | StockN
 
   public cycleSort(): string {
     this.sortMode = (this.sortMode + 1) % 3;
-    this.changeEmitter.fire(undefined);
+    for (const group of this.groupNodes) {
+      this.changeEmitter.fire(group);
+    }
+    this.snapshotEmitter.fire(this.getSnapshot());
     return ['默认顺序', '涨跌幅升序', '涨跌幅降序'][this.sortMode];
+  }
+
+  public notifyStateChanged(): void {
+    this.updateGroups();
+    this.pruneStockNodes();
+    this.changeEmitter.fire(undefined);
+    this.snapshotEmitter.fire(this.getSnapshot());
   }
 
   public refresh(showError = true): Promise<AppSnapshot> {
@@ -247,6 +333,9 @@ export class StockProvider implements vscode.TreeDataProvider<GroupNode | StockN
   }
 
   private async performRefresh(codes: string[], showError: boolean): Promise<AppSnapshot> {
+    const previousOrders = new Map(
+      this.groupNodes.map((group) => [group.kind, this.sortCodes(group.codes).join(',')])
+    );
     try {
       const quotes = await this.dataService.getQuotes(codes);
       for (const quote of quotes) {
@@ -270,7 +359,7 @@ export class StockProvider implements vscode.TreeDataProvider<GroupNode | StockN
       }
     }
     const snapshot = this.getSnapshot();
-    this.changeEmitter.fire(undefined);
+    this.updateVisibleTree(previousOrders);
     this.snapshotEmitter.fire(snapshot);
     return snapshot;
   }
@@ -316,8 +405,14 @@ export class StockProvider implements vscode.TreeDataProvider<GroupNode | StockN
     ]);
     return {
       watchlist,
+      indexCodes: watchlist.filter((code) =>
+        this.stateStore.isIndex(code, this.quoteMap.get(code)?.name)
+      ),
+      watchGroups: this.stateStore.getWatchGroups(),
+      watchGroupAssignments: this.stateStore.getWatchGroupAssignments(),
       holdings,
       quotes: Array.from(this.quoteMap.values()).filter((quote) => activeCodes.has(quote.code)),
+      sortMode: this.sortMode,
       updatedAt: this.refreshedAt
     };
   }

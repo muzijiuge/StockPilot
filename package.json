@@ -2,7 +2,7 @@
   "name": "a-share-leek",
   "displayName": "A股韭菜盒子",
   "description": "仅保留 A 股的 VS Code 行情侧栏、K 线、资产、资讯、板块行情和大盘云图。",
-  "version": "1.3.5",
+  "version": "1.3.16",
   "publisher": "codex-local",
   "author": "Local customization",
   "license": "BSD-3-Clause",
@@ -54,6 +54,7 @@
         {
           "id": "aShareLeek.stock",
           "name": "STOCK",
+          "type": "webview",
           "visibility": "visible",
           "contextualTitle": "A股行情"
         }
@@ -101,8 +102,25 @@
         "icon": "$(add)"
       },
       {
+        "command": "aShareLeek.addWatchGroup",
+        "title": "新建自选分组",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "aShareLeek.moveWatchToGroup",
+        "title": "移入自选分组"
+      },
+      {
+        "command": "aShareLeek.renameWatchGroup",
+        "title": "重命名自选分组"
+      },
+      {
+        "command": "aShareLeek.deleteWatchGroup",
+        "title": "删除自选分组"
+      },
+      {
         "command": "aShareLeek.removeStock",
-        "title": "移除自选股",
+        "title": "从侧栏删除",
         "icon": "$(trash)"
       },
       {
@@ -135,12 +153,12 @@
         {
           "command": "aShareLeek.openCenter",
           "when": "view == aShareLeek.stock",
-          "group": "navigation@4"
+          "group": "navigation@5"
         },
         {
           "command": "aShareLeek.openAssets",
           "when": "view == aShareLeek.stock",
-          "group": "navigation@5"
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -156,7 +174,7 @@
         },
         {
           "command": "aShareLeek.removeStock",
-          "when": "view == aShareLeek.stock && viewItem == stock",
+          "when": "view == aShareLeek.stock && viewItem =~ /stock|holding|index/",
           "group": "modify@1"
         }
       ]
@@ -173,10 +191,10 @@
       "properties": {
         "aShareLeek.refreshInterval": {
           "type": "number",
-          "default": 5000,
+          "default": 3000,
           "minimum": 3000,
           "maximum": 300000,
-          "description": "侧栏和韭菜中心的自动轮询间隔（毫秒），默认与 LeekFund 一致为 5000 毫秒；实时走势使用 SSE 推送，不受此间隔控制。"
+          "description": "侧栏和韭菜中心的自动轮询间隔（毫秒），默认 3000 毫秒；实时走势使用 SSE 推送，不受此间隔控制。"
         },
         "aShareLeek.requestOutsideTradingHours": {
           "type": "boolean",
@@ -194,10 +212,10 @@
   "scripts": {
     "copy-assets": "node scripts/copy-assets.js",
     "compile": "npm run copy-assets && tsc -p .",
-    "check": "npm run compile && node --check media/center.js && node --check media/stock-trend.js && node test/tencent-stock-search.js && node test/pick-stock-live.js && node test/market-hours.js && node test/cloud-snapshot.js && node test/cloud-front-performance.js && node test/quote-fallback.js && node test/realtime-extras-cache.js && node test/eastmoney-kline-fallback.js && node test/eastmoney-proxy.js && node test/smoke.js",
+    "check": "npm run compile && node --check media/center.js && node --check media/sidebar.js && node --check media/stock-trend.js && node test/regressions.js && node test/sidebar-regressions.js && node test/watch-groups.js && node test/tencent-stock-search.js && node test/pick-stock-live.js && node test/market-hours.js && node test/cloud-snapshot.js && node test/cloud-front-performance.js && node test/quote-fallback.js && node test/realtime-extras-cache.js && node test/eastmoney-kline-fallback.js && node test/eastmoney-proxy.js && node test/smoke.js",
     "test:proxy": "npm run compile && node test/eastmoney-kline-fallback.js && node test/eastmoney-proxy.js",
     "vscode:prepublish": "npm run compile",
-    "package": "npm run compile && vsce package --no-dependencies --allow-missing-repository --out dist/a-share-leek-1.3.5.vsix"
+    "package": "npm run compile && node -e \"require('fs').mkdirSync('dist', { recursive: true })\" && vsce package --no-dependencies --allow-missing-repository --out dist/a-share-leek-1.3.16.vsix"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

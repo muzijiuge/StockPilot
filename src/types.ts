@@ -27,6 +27,7 @@ export interface Quote {
   open: number;
   previousClose: number;
   amplitude: number;
+  volumeRatio: number;
   turnover: number;
   pe: number;
   pb: number;
@@ -85,16 +86,23 @@ export interface NewsItem {
   url: string;
 }
 
-export interface ResearchReport {
+export interface CommunityHeat {
+  thsAvailable: boolean;
+  thsHeat: number | null;
+  thsRank: number | null;
+  thsRankChange: number | null;
+  thsPeriod: string;
+  xueqiuAvailable: boolean;
+  xueqiuFollowers: number | null;
+}
+
+export interface StockAnomalyInterpretation {
+  id: string;
   date: string;
   title: string;
-  organization: string;
-  rating: string;
-  previousRating: string;
-  ratingChange: string;
-  targetPrice: string;
-  researcher: string;
-  url: string;
+  tagName: string;
+  content: string;
+  keywords: string[];
 }
 
 export interface StockProfile {
@@ -112,7 +120,8 @@ export interface StockProfile {
   business: string;
   summary: string;
   concepts: string[];
-  reports: ResearchReport[];
+  community: CommunityHeat;
+  anomalies: StockAnomalyInterpretation[];
   updatedAt: number;
 }
 
@@ -199,9 +208,18 @@ export interface SectorConstituent {
 
 export interface AppSnapshot {
   watchlist: string[];
+  indexCodes: string[];
+  watchGroups: WatchGroup[];
+  watchGroupAssignments: Record<string, string[]>;
   holdings: Holding[];
   quotes: Quote[];
+  sortMode: number;
   updatedAt: number;
+}
+
+export interface WatchGroup {
+  id: string;
+  name: string;
 }
 
 export const INDEX_CODES = new Set([
@@ -212,6 +230,22 @@ export const INDEX_CODES = new Set([
   'sz399001',
   'sz399006'
 ]);
+
+/**
+ * Recognises the exchange code ranges reserved for A-share indices.
+ *
+ * The built-in list above contains the default sidebar indices, while these
+ * ranges cover indices discovered through search (including sector/theme
+ * indices) before their explicit instrument type has been persisted.
+ */
+export function isAIndexCode(code: string): boolean {
+  const normalized = code.trim().toLowerCase();
+  return (
+    INDEX_CODES.has(normalized) ||
+    /^sh(?:000|930|931|932|950|980|990)\d{3}$/.test(normalized) ||
+    /^sz399\d{3}$/.test(normalized)
+  );
+}
 
 export const DEFAULT_NAMES: Record<string, string> = {
   sh600036: '招商银行',

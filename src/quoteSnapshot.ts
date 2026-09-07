@@ -109,6 +109,7 @@ function normalizeStoredQuote(value: unknown): Quote | undefined {
     open: finiteNumber(candidate.open),
     previousClose: finiteNumber(candidate.previousClose),
     amplitude: finiteNumber(candidate.amplitude),
+    volumeRatio: finiteNumber(candidate.volumeRatio),
     turnover: finiteNumber(candidate.turnover),
     pe: finiteNumber(candidate.pe),
     pb: finiteNumber(candidate.pb),

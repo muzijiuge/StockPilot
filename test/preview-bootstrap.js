@@ -259,10 +259,23 @@
                 business: '吸收公众存款；发放短期、中期和长期贷款；办理国内外结算及银行卡业务。',
                 summary: '招商银行是一家全国性股份制商业银行，坚持以客户为中心，持续推进数字化经营与财富管理能力建设。',
                 concepts: ['银行', '跨境支付', '互联网金融', 'MSCI中国', '沪股通', '证金持股'],
-                reports: [
-                  { date: '2026-07-10', rating: '买入', previousRating: '买入', ratingChange: '维持', targetPrice: '45.80', researcher: '王一', organization: '中信证券' },
-                  { date: '2026-07-03', rating: '增持', previousRating: '增持', ratingChange: '维持', targetPrice: '43.20', researcher: '李明', organization: '华泰证券' },
-                  { date: '2026-06-28', rating: '买入', previousRating: '--', ratingChange: '首次', targetPrice: '46.00', researcher: '陈晓', organization: '国泰海通' }
+                community: {
+                  thsAvailable: true,
+                  thsHeat: 7121.1,
+                  thsRank: 81,
+                  thsRankChange: 6,
+                  thsPeriod: '1小时',
+                  xueqiuAvailable: true,
+                  xueqiuFollowers: 2920044
+                },
+                anomalies: [
+                  {
+                    id: '21868570',
+                    date: '2026-07-31',
+                    tagName: '大跌',
+                    title: '银行板块下跌 · 前期涨幅较大 · 市场风格切换',
+                    content: '1、银行板块整体回调，招商银行随板块下跌。\n2、此前多个交易日累计上涨，存在短期回调压力。\n3、市场资金阶段性流向成长方向。'
+                  }
                 ]
               }
             });

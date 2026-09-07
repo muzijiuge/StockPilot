@@ -32,6 +32,11 @@ async function main() {
   const quotes = await service.getQuotes(['sh600036', 'sh000001']);
   assert.ok(quotes.length >= 2, 'quotes should contain A-share stock and index');
   assert.ok(quotes.every((item) => item.price > 0), 'quote prices should be positive');
+  assert.ok(
+    quotes.every((item) => Number.isFinite(item.volumeRatio) && Number.isFinite(item.turnover)) &&
+      quotes.find((item) => item.code === 'sh600036').volumeRatio > 0,
+    'stock quotes should expose a current positive volume ratio and turnover rate'
+  );
 
   const chart = await service.getChart('sh600036', '101');
   assert.equal(chart.kind, 'candle');
@@ -50,12 +55,49 @@ async function main() {
   assert.ok(profile.industry.length > 0, 'stock profile should contain industry');
   assert.ok(profile.subIndustry.length > 0, 'stock profile should contain sub-industry');
   assert.ok(profile.concepts.length > 0, 'stock profile should contain concepts');
+  assert.equal(
+    profile.community.xueqiuAvailable,
+    true,
+    'stock profile should reach the Xueqiu follower endpoint'
+  );
+  assert.ok(
+    Number(profile.community.xueqiuFollowers) > 0,
+    'stock profile should contain a real Xueqiu follower count'
+  );
+  assert.equal(
+    profile.community.thsAvailable,
+    true,
+    'stock profile should reach the Tonghuashun hot-list endpoint'
+  );
+  assert.ok(Array.isArray(profile.anomalies), 'stock profile should expose anomaly interpretations');
+  const now = new Date();
+  const cutoff = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, now.getUTCDate()))
+    .toISOString()
+    .slice(0, 10);
+  assert.ok(
+    profile.anomalies.every(
+      (item) => item.date >= cutoff && item.title.length > 0 && item.content.length > 0
+    ),
+    'Tonghuashun anomaly interpretations should be limited to the latest rolling month'
+  );
 
   const sectorOverview = await service.getSectorOverview(true);
   const industryBoards = await service.getSectorBoards('industry');
   const conceptBoards = await service.getSectorBoards('concept');
+  const [topIndustryBoards, topConceptBoards] = await Promise.all([
+    service.getTopSectorBoards('industry', 20, true),
+    service.getTopSectorBoards('concept', 20, true)
+  ]);
   assert.ok(industryBoards.length > 400, 'industry sector list should contain all board levels');
   assert.ok(conceptBoards.length > 400, 'concept sector list should contain current boards');
+  assert.equal(topIndustryBoards.length, 20, 'sidebar industry ranking should contain TOP20');
+  assert.equal(topConceptBoards.length, 20, 'sidebar concept ranking should contain TOP20');
+  assert.ok(
+    topIndustryBoards.every(
+      (item, index) => index === 0 || topIndustryBoards[index - 1].percent >= item.percent
+    ),
+    'sidebar industry ranking should be ordered by daily percentage descending'
+  );
   assert.equal(sectorOverview.hot3d.length, 12, 'sector overview should contain 3-day hot boards');
   assert.equal(
     sectorOverview.fast3m.length,
@@ -115,8 +157,14 @@ async function main() {
         newsCount: news.length,
         profileName: profile.fullName,
         profileConcepts: profile.concepts.length,
+        thsHeat: profile.community.thsHeat,
+        thsRank: profile.community.thsRank,
+        xueqiuFollowers: profile.community.xueqiuFollowers,
+        anomalyCount: profile.anomalies.length,
         industrySectorCount: industryBoards.length,
         conceptSectorCount: conceptBoards.length,
+        topIndustryCount: topIndustryBoards.length,
+        topConceptCount: topConceptBoards.length,
         hot3dCount: sectorOverview.hot3d.length,
         fast3mCount: sectorOverview.fast3m.length,
         sectorConstituentCount: sectorConstituents.length,

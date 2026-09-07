@@ -62,13 +62,7 @@
     if (!current) {
       return '--';
     }
-    if (Math.abs(current) >= 10000) {
-      return current.toFixed(1);
-    }
-    if (Math.abs(current) >= 100) {
-      return current.toFixed(2);
-    }
-    return current.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+    return current.toFixed(2);
   }
 
   function compact(value) {
