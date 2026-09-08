@@ -12,6 +12,7 @@ export type ChartInterval =
   | '103';
 export type MarketFilter = 'all' | 'sh' | 'sz' | 'bj' | 'star' | 'chinext';
 export type SectorBoardKind = 'industry' | 'concept';
+export type SectorBoardSort = 'percent' | 'heat';
 
 export interface Quote {
   code: string;
@@ -84,6 +85,74 @@ export interface NewsItem {
   title: string;
   summary: string;
   url: string;
+}
+
+export type CommunityPostSort = 'hot';
+
+export interface CommunityPost {
+  id: string;
+  contentId: string;
+  author: string;
+  authorDescription: string;
+  avatar: string;
+  title: string;
+  content: string;
+  images: string[];
+  publishedAt: number;
+  likeCount: number;
+  commentCount: number;
+  forwardCount: number;
+  url: string;
+  tags: string[];
+}
+
+export interface CommunityComment {
+  id: string;
+  author: string;
+  avatar: string;
+  content: string;
+  publishedAt: number;
+  replyTo: string;
+  isAuthor: boolean;
+  replyCount: number;
+  replies: CommunityComment[];
+}
+
+export interface CommunityCommentCursor {
+  page: number;
+  cid: string;
+}
+
+export interface CommunityCommentPage {
+  comments: CommunityComment[];
+  cursor: CommunityCommentCursor | null;
+  hasMore: boolean;
+  total: number;
+}
+
+export interface CommunityPostDetail {
+  post: CommunityPost;
+  ipLocation: string;
+  comments: CommunityComment[];
+  commentCursor: CommunityCommentCursor | null;
+  commentsHaveMore: boolean;
+  commentTotal: number;
+}
+
+/** Internal continuation data returned by the public 同花顺 community feed. */
+export interface CommunityCursor {
+  page: number;
+  lastScore?: number;
+  lastPublishTime?: number;
+  startPage?: number;
+  buffered?: CommunityPost[];
+}
+
+export interface CommunityPage {
+  posts: CommunityPost[];
+  cursor: CommunityCursor | null;
+  hasMore: boolean;
+  warning: string;
 }
 
 export interface CommunityHeat {
@@ -182,6 +251,19 @@ export interface SectorBoard {
   leaderPercent: number;
   threeDayPercent: number;
   threeMinutePercent: number;
+  heat?: number;
+  heatRank?: number;
+  heatRankChange?: number;
+  open?: number;
+  previousClose?: number;
+  high?: number;
+  low?: number;
+  /** Total traded shares; display as hands by dividing by 100. */
+  volume?: number;
+  /** Total traded value in CNY. */
+  amount?: number;
+  constituentCount?: number;
+  description?: string;
   updatedAt: number;
 }
 
@@ -202,7 +284,17 @@ export interface SectorConstituent {
   change: number;
   turnover: number;
   netInflow: number;
+  amount?: number;
+  open?: number;
+  previousClose?: number;
+  high?: number;
+  low?: number;
+  volume?: number;
+  volumeRatio?: number;
+  amplitude?: number;
+  pe?: number;
   marketCap: number;
+  totalMarketCap?: number;
   updatedAt: number;
 }
 

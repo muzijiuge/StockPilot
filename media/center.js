@@ -4,7 +4,7 @@
   var vscode = acquireVsCodeApi();
   var restored = vscode.getState() || {};
   var state = {
-    tab: restored.tab || 'watch',
+    tab: document.body.dataset.initialTab || restored.tab || 'watch',
     selectedCode: restored.selectedCode || '',
     snapshot: {
       watchlist: [],
@@ -1232,11 +1232,12 @@
   function findSectorBoard(code) {
     var normalized = String(code || '').toUpperCase();
     return sectorBoardPool().find(function (item) {
-      return String(item.code || '').toUpperCase() === normalized;
+      return String(item.code || '').toUpperCase() === normalized ||
+        String(item.secid || '').toUpperCase() === normalized;
     }) || null;
   }
 
-  function showSectorView(mode) {
+  function showSectorView(mode, notifyHost) {
     state.sectorMode = mode;
     var sectorPage = byId('sectorPage');
     if (sectorPage) {
@@ -1259,12 +1260,14 @@
         }
       }
     }, 40);
-    post({
-      type: 'setSectorView',
-      mode: mode,
-      kind: state.sectorKind,
-      code: state.sectorDetail && state.sectorDetail.code
-    });
+    if (notifyHost !== false) {
+      post({
+        type: 'setSectorView',
+        mode: mode,
+        kind: state.sectorKind,
+        code: state.sectorDetail && state.sectorDetail.code
+      });
+    }
   }
 
   function sectorTile(item, valueKey) {
@@ -1549,7 +1552,22 @@
 
   function renderSectorDetail() {
     var detail = state.sectorDetail || {};
-    var board = findSectorBoard(detail.code) || { code: detail.code || '--', name: detail.code || '板块详情' };
+    var board = detail.board || findSectorBoard(detail.code) || { code: detail.code || '--', name: detail.code || '板块详情' };
+    var constituents = Array.isArray(detail.data)
+      ? detail.data
+      : Array.isArray(detail.constituents)
+        ? detail.constituents
+        : [];
+    constituents = constituents.slice().sort(function (left, right) {
+      return number(right.percent) - number(left.percent);
+    });
+    var constituentCount = Math.max(number(board.constituentCount), constituents.length);
+    var upCount = number(board.upCount) || constituents.filter(function (item) {
+      return number(item.percent) > 0;
+    }).length;
+    var downCount = number(board.downCount) || constituents.filter(function (item) {
+      return number(item.percent) < 0;
+    }).length;
     if (byId('sectorDetailTitle')) {
       byId('sectorDetailTitle').textContent = board.name || board.code;
     }
@@ -1563,11 +1581,21 @@
         escapeHtml(signed(board.percent, 2, '%')) + '</b></span>' +
         '<span>涨跌额 <b class="' + directionClass(board.change) + '">' +
         escapeHtml(signed(board.change, 2, '')) + '</b></span>' +
-        '<span>换手 <b>' + escapeHtml(number(board.turnover).toFixed(2) + '%') + '</b></span>' +
+        '<span>成分股 <b>' + escapeHtml(String(constituentCount)) + '</b></span>' +
+        '<span>今开 <b>' + escapeHtml(price(board.open)) + '</b></span>' +
+        '<span>昨收 <b>' + escapeHtml(price(board.previousClose)) + '</b></span>' +
+        '<span>最高 <b>' + escapeHtml(price(board.high)) + '</b></span>' +
+        '<span>最低 <b>' + escapeHtml(price(board.low)) + '</b></span>' +
+        '<span>成交量 <b>' + escapeHtml(Number.isFinite(board.volume) ? compact(board.volume / 100) + '手' : '--') + '</b></span>' +
+        '<span>成交额 <b>' + escapeHtml(Number.isFinite(board.amount) ? compact(board.amount) + '元' : '--') + '</b></span>' +
         '<span>主力净流入 <b class="' + directionClass(board.netInflow) + '">' +
         escapeHtml(sectorFlow(board.netInflow)) + '</b></span>' +
-        '<span>上涨/下跌 <b><i class="rise">' + number(board.upCount) + '</i> / <i class="fall">' +
-        number(board.downCount) + '</i></b></span>';
+        '<span>上涨/下跌 <b><i class="rise">' + upCount + '</i> / <i class="fall">' +
+        downCount + '</i></b></span>';
+    }
+    if (byId('sectorDetailDescription')) {
+      byId('sectorDetailDescription').textContent = board.description || '';
+      byId('sectorDetailDescription').classList.toggle('hidden', !board.description);
     }
     var followButton = byId('sectorDetailFollowButton');
     if (followButton) {
@@ -1581,14 +1609,6 @@
         svgIcon('watch', 'inline-icon') +
         '<span>' + (isFollowed ? '已关注' : '关注') + '</span>';
     }
-    var constituents = Array.isArray(detail.data)
-      ? detail.data
-      : Array.isArray(detail.constituents)
-        ? detail.constituents
-        : [];
-    constituents = constituents.slice().sort(function (left, right) {
-      return number(right.percent) - number(left.percent);
-    });
     var body = byId('sectorConstituentRows');
     if (body) {
       body.innerHTML = constituents
@@ -1600,10 +1620,14 @@
             escapeHtml(item.code) + '</span></button></td><td>' + escapeHtml(price(item.price)) +
             '</td><td class="' + cls + '">' + escapeHtml(signed(item.percent, 2, '%')) +
             '</td><td class="' + cls + '">' + escapeHtml(signed(item.change, 2, '')) +
+            '</td><td>' + escapeHtml(number(item.amplitude) ? number(item.amplitude).toFixed(2) + '%' : '--') +
             '</td><td>' + escapeHtml(number(item.turnover).toFixed(2) + '%') +
-            '</td><td class="' + directionClass(item.netInflow) + '">' +
-            escapeHtml(sectorFlow(item.netInflow)) + '</td><td>' +
-            escapeHtml(compact(item.marketCap)) + '</td><td><button class="sector-open-stock" type="button" data-sector-open-stock="' +
+            '</td><td>' + escapeHtml(number(item.pe) ? number(item.pe).toFixed(2) : '--') +
+            '</td><td>' +
+            escapeHtml(item.amount ? compact(item.amount) : '--') + '</td><td>' +
+            escapeHtml(item.marketCap ? compact(item.marketCap) : '--') + '</td><td>' +
+            escapeHtml(item.totalMarketCap ? compact(item.totalMarketCap) : '--') +
+            '</td><td><button class="sector-open-stock" type="button" data-sector-open-stock="' +
             escapeHtml(item.code) + '">查看走势</button><button class="sector-add-stock" type="button" data-sector-add-stock="' +
             escapeHtml(item.code) + '">加入自选</button></td></tr>'
           );
@@ -1617,13 +1641,24 @@
 
   function openSectorDetail(code, kind) {
     var normalized = String(code || '').toUpperCase();
-    if (!/^BK\d{4}$/.test(normalized)) {
+    if (!/^(?:BK\d{4}|\d{6})$/.test(normalized)) {
       return;
     }
-    state.sectorDetail = { code: normalized, kind: kind || (findSectorBoard(normalized) || {}).kind, data: [] };
+    state.sectorDetail = {
+      code: normalized,
+      kind: kind || (findSectorBoard(normalized) || {}).kind,
+      board: findSectorBoard(normalized),
+      data: []
+    };
     showSectorView('detail');
     renderSectorDetail();
-    post({ type: 'loadSectorDetail', bkCode: normalized, code: normalized, kind: state.sectorDetail.kind });
+    post({
+      type: 'loadSectorDetail',
+      bkCode: normalized,
+      code: normalized,
+      kind: state.sectorDetail.kind,
+      board: state.sectorDetail.board
+    });
   }
 
   function movingAverage(dayCount, values) {
@@ -2052,6 +2087,7 @@
           bkCode: state.sectorDetail.code,
           code: state.sectorDetail.code,
           kind: state.sectorDetail.kind,
+          board: state.sectorDetail.board,
           force: true
         });
       } else if (state.sectorMode === 'list') {
@@ -2227,11 +2263,21 @@
         break;
       case 'sectorDetailLoading':
         var loadingSectorCode = String(message.bkCode || message.code || '').toUpperCase();
+        var previousLoadingDetail = state.sectorDetail || {};
+        state.sectorKind = message.kind === 'concept' ? 'concept' : 'industry';
         state.sectorDetail = {
           code: loadingSectorCode,
-          kind: message.kind || (findSectorBoard(loadingSectorCode) || {}).kind,
-          data: []
+          kind: state.sectorKind,
+          board:
+            message.board ||
+            (previousLoadingDetail.code === loadingSectorCode ? previousLoadingDetail.board : null),
+          data:
+            previousLoadingDetail.code === loadingSectorCode && Array.isArray(previousLoadingDetail.data)
+              ? previousLoadingDetail.data
+              : []
         };
+        setTab('sector', false);
+        showSectorView('detail', false);
         if (byId('sectorDetailEmpty')) {
           byId('sectorDetailEmpty').textContent = '正在加载成分股…';
           byId('sectorDetailEmpty').classList.remove('hidden');
@@ -2240,16 +2286,49 @@
         break;
       case 'sectorDetail':
         var detailSectorCode = String(message.bkCode || message.code || '').toUpperCase();
+        var previousSectorDetail = state.sectorDetail || {};
+        state.sectorKind = message.kind === 'concept' ? 'concept' : 'industry';
         state.sectorDetail = {
           code: detailSectorCode,
-          kind: message.kind || (findSectorBoard(detailSectorCode) || {}).kind,
+          kind: state.sectorKind,
+          board:
+            message.board ||
+            (previousSectorDetail.code === detailSectorCode ? previousSectorDetail.board : null),
           data: message.data || []
         };
+        if (state.sectorDetail.board) {
+          var resolvedBoardList = state.sectorBoardsByKind[state.sectorKind] || [];
+          state.sectorBoardsByKind[state.sectorKind] = resolvedBoardList.map(function (item) {
+            return item.code === state.sectorDetail.board.code ||
+              item.secid === state.sectorDetail.board.secid ||
+              item.name === state.sectorDetail.board.name
+              ? Object.assign({}, item, state.sectorDetail.board)
+              : item;
+          });
+        }
         state.sectorUpdatedAt = message.updatedAt || Date.now();
+        setTab('sector', false);
+        showSectorView('detail', false);
         if (byId('sectorDetailEmpty')) {
           byId('sectorDetailEmpty').textContent = '-- 暂无成分股数据 --';
         }
         renderSectorDetail();
+        break;
+      case 'sectorDetailError':
+        var failedSectorCode = String(message.bkCode || message.code || '').toUpperCase();
+        var failedSectorDetail = state.sectorDetail || {};
+        if (failedSectorDetail.code === failedSectorCode) {
+          if (message.board && !failedSectorDetail.board) {
+            failedSectorDetail.board = message.board;
+          }
+          state.sectorDetail = failedSectorDetail;
+          renderSectorDetail();
+          if (byId('sectorDetailEmpty') && !(failedSectorDetail.data || []).length) {
+            byId('sectorDetailEmpty').textContent = message.message || '板块详情加载失败，请重试';
+            byId('sectorDetailEmpty').classList.remove('hidden');
+          }
+          showToast(message.message || '板块详情加载失败，请重试', true);
+        }
         break;
       case 'sectorFollows':
         state.sectorFollows = (message.data || []).map(function (code) {
@@ -2295,5 +2374,16 @@
 
   renderMarketClock();
   setTab(state.tab, false);
+  var initialSectorCode = document.body.dataset.initialSector;
+  if (/^(?:BK\d{4}|\d{6})$/i.test(initialSectorCode || '')) {
+    state.sectorKind = document.body.dataset.initialSectorKind === 'concept' ? 'concept' : 'industry';
+    state.sectorDetail = { code: initialSectorCode, kind: state.sectorKind, data: [] };
+    showSectorView('detail', false);
+    if (byId('sectorDetailEmpty')) {
+      byId('sectorDetailEmpty').textContent = '正在加载成分股…';
+    }
+    renderSectorDetail();
+  }
+  document.body.classList.remove('booting');
   post({ type: 'ready' });
 })();

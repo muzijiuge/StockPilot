@@ -28,7 +28,7 @@ const CLOUD_SNAPSHOTS_KEY = 'aShareLeek.cloudSnapshots.v1';
 const QUOTE_SNAPSHOT_KEY = 'aShareLeek.quoteSnapshot.v1';
 const INDEX_WATCHLIST_KEY = 'aShareLeek.indexWatchlist.v1';
 const WATCH_GROUPS_KEY = 'aShareLeek.watchGroups.v1';
-const SECTOR_CODE_PATTERN = /^BK\d{4}$/i;
+const SECTOR_CODE_PATTERN = /^(?:BK\d{4}|\d{6})$/i;
 const WATCH_GROUP_ID_PATTERN = /^group-[a-z0-9-]{6,64}$/;
 
 interface StoredWatchGroupState {

@@ -76,16 +76,31 @@ assert.match(stateStoreSource, /组内股票会回到默认|deleteWatchGroup/);
 assert.match(sidebarViewSource, /body\.booting > \* \{ visibility: hidden; \}/);
 assert.match(sidebarViewSource, /background: var\(--vscode-sideBar-background\)/);
 assert.match(sidebarScript, /document\.body\.classList\.remove\('booting'\)/);
-assert.match(sidebarViewSource, /getTopSectorBoards\('industry', 20, force\)/);
-assert.match(sidebarViewSource, /getTopSectorBoards\('concept', 20, force\)/);
-assert.match(sidebarViewSource, /\.sort\(\(left, right\) => right\.percent - left\.percent\)/);
-assert.match(sidebarViewSource, /\.slice\(0, 20\)/);
+assert.match(sidebarViewSource, /getTopSectorBoards\(kind, 20, force, sort\)/);
+assert.match(sidebarViewSource, /sectorSortModes/);
+assert.match(sidebarViewSource, /toggleSectorSort/);
+assert.match(sidebarViewSource, /data-sector-sort-toggle="industry"/);
+assert.match(sidebarViewSource, /data-sector-sort-toggle="concept"/);
+assert.match(sidebarScript, /data-sector-sort-toggle/);
+assert.match(sidebarScript, /message\.sortModes/);
+assert.match(sidebarCss, /\.sector-sort-toggle\.active/);
 assert.match(sidebarViewSource, /this\.stockProvider\.refresh\(false\)/);
 assert.match(sidebarViewSource, /this\.refreshSectors\(true\)/);
 assert.match(sidebarViewSource, /}, 10_000\)/);
 assert.match(sidebarViewSource, /this\.stopSectorTimer\(\)/);
 assert.match(sidebarViewSource, /executeCommand\('aShareLeek\.openSector',[\s\S]*code:[\s\S]*kind/);
-assert.match(centerPanelSource, /openSectorBoard\(kind: SectorBoardKind, code: string\)/);
+assert.match(centerPanelSource, /openSectorBoard\(kind: SectorBoardKind, code: string, board\?: SectorBoard\)/);
+assert.match(dataServiceSource, /q\.10jqka\.com\.cn\/thshy/);
+assert.match(dataServiceSource, /kind === 'industry' \? 'thshy' : 'gn'/);
+assert.match(dataServiceSource, /parseTonghuashunConceptBoards/);
+assert.match(dataServiceSource, /parseTonghuashunSectorConstituents/);
+assert.match(dataServiceSource, /v2\/blocksrank\//);
+assert.match(dataServiceSource, /['"]\/199112\/d['"]\s*\+/);
+assert.match(dataServiceSource, /hot_list_data\/out\/hot_list\/v1\/plate\?type=/);
+assert.match(dataServiceSource, /v2\/blockrank\//);
+assert.match(dataServiceSource, /\/199112\/d1000\.js/);
+assert.match(dataServiceSource, /value\.sort\(\(left, right\) => right\.percent - left\.percent\)/);
+assert.match(centerScript, /showSectorView\('detail', false\)/);
 assert.match(sidebarScript, /function holdingTotalPercent\(codes, holdings, quotes\)/);
 assert.match(sidebarScript, /holdingSummary\.textContent = totalPercent === null/);
 assert.match(sidebarCss, /\.group-summary\s*\{[\s\S]*font-family:\s*var\(--vscode-font-family\)[\s\S]*font-weight:\s*500/);
@@ -126,7 +141,7 @@ console.log(
     responsiveGridColumns: true,
     removalUi: 'right-click context menu',
     removableGroups: ['holding', 'stock', 'index'],
-    sectorRankings: ['industry TOP20', 'concept TOP20'],
+    sectorRankings: ['industry TOP20', 'concept TOP20', 'Tonghuashun heat sorting'],
     holdingRowMetric: 'daily change percent',
     holdingHeaderMetric: 'weighted floating profit percent',
     groupCountsVisible: false,

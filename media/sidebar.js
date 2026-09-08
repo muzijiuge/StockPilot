@@ -15,6 +15,7 @@
       updatedAt: 0
     },
     sectors: { industry: [], concept: [] },
+    sectorSortModes: { industry: 'percent', concept: 'percent' },
     collapsed: Object.assign(
       { holding: false, stocks: false, stock: false, index: true, industry: false, concept: false },
       restored.collapsed || {}
@@ -23,7 +24,32 @@
     contextTarget: null,
     contextGroupId: '',
     draggedCode: '',
-    draggedGroupId: ''
+    draggedGroupId: '',
+    community: {
+      visible: false,
+      code: '',
+      name: '',
+      sort: 'hot',
+      posts: [],
+      loading: false,
+      hasMore: true,
+      warning: '',
+      error: ''
+    },
+    communityDetail: {
+      visible: false,
+      post: null,
+      ipLocation: '',
+      comments: [],
+      loading: false,
+      commentsLoading: false,
+      commentsHaveMore: false,
+      commentTotal: 0,
+      error: '',
+      commentsError: '',
+      repliesLoading: Object.create(null),
+      repliesError: Object.create(null)
+    }
   };
 
   function byId(id) {
@@ -55,6 +81,28 @@
       return (current / 10000).toFixed(2) + '万';
     }
     return current.toFixed(0);
+  }
+
+  function compactCount(value) {
+    var current = Math.max(0, number(value));
+    if (current >= 10000) {
+      return (current / 10000).toFixed(current >= 100000 ? 0 : 1) + '万';
+    }
+    return String(Math.round(current));
+  }
+
+  function communityTime(value) {
+    var timestamp = number(value);
+    if (!timestamp) {
+      return '';
+    }
+    var date = new Date(timestamp);
+    var now = new Date();
+    var sameYear = date.getFullYear() === now.getFullYear();
+    var pad = function (part) { return part < 10 ? '0' + String(part) : String(part); };
+    return (sameYear ? '' : date.getFullYear() + '-') +
+      pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' +
+      pad(date.getHours()) + ':' + pad(date.getMinutes());
   }
 
   function direction(value) {
@@ -283,8 +331,24 @@
     row.querySelector('[data-cell="name"]').textContent = item.name || item.code;
     row.setAttribute(
       'aria-label',
-      '第' + String(rank) + '名 ' + (item.name || item.code) + ' ' + percent.textContent
+      (state.sectorSortModes[item.kind] === 'heat' ? '热度' : '涨幅') +
+        '第' + String(rank) + '名 ' + (item.name || item.code) + ' ' + percent.textContent
     );
+  }
+
+  function updateSectorSortToggle(kind) {
+    var button = document.querySelector('[data-sector-sort-toggle="' + kind + '"]');
+    if (!button) {
+      return;
+    }
+    var heat = state.sectorSortModes[kind] === 'heat';
+    var label = heat
+      ? (kind === 'industry' ? '行业板块' : '概念板块') + '当前按热度排序，点击恢复涨幅排序'
+      : (kind === 'industry' ? '行业板块' : '概念板块') + '切换为热度排序';
+    button.classList.toggle('active', heat);
+    button.setAttribute('aria-pressed', String(heat));
+    button.setAttribute('aria-label', label);
+    button.title = label;
   }
 
   function reconcileSectorGroup(kind, title, items) {
@@ -306,6 +370,7 @@
       }
     });
     section.querySelector('.group-title').textContent = title;
+    updateSectorSortToggle(kind);
     applyCollapsedState(kind);
   }
 
@@ -368,6 +433,315 @@
     refreshVisibleTooltip();
   }
 
+  function createCommunityCard(post) {
+    var card = document.createElement('article');
+    card.className = 'community-card';
+    card.tabIndex = 0;
+    card.setAttribute('role', 'link');
+    card.dataset.postId = String(post.id || '');
+
+    var header = document.createElement('div');
+    header.className = 'community-card-header';
+    var avatar = document.createElement('div');
+    avatar.className = 'community-avatar';
+    if (post.avatar) {
+      var avatarImage = document.createElement('img');
+      avatarImage.src = post.avatar;
+      avatarImage.alt = '';
+      avatarImage.loading = 'lazy';
+      avatarImage.referrerPolicy = 'no-referrer';
+      avatarImage.addEventListener('error', function () {
+        avatar.textContent = String(post.author || '同').slice(0, 1);
+      });
+      avatar.appendChild(avatarImage);
+    } else {
+      avatar.textContent = String(post.author || '同').slice(0, 1);
+    }
+    var authorBlock = document.createElement('div');
+    authorBlock.className = 'community-author';
+    var authorName = document.createElement('strong');
+    authorName.textContent = post.author || '同花顺用户';
+    var publishedAt = document.createElement('span');
+    publishedAt.textContent = communityTime(post.publishedAt);
+    authorBlock.appendChild(authorName);
+    authorBlock.appendChild(publishedAt);
+    header.appendChild(avatar);
+    header.appendChild(authorBlock);
+    card.appendChild(header);
+
+    if (post.title) {
+      var title = document.createElement('h3');
+      title.textContent = post.title;
+      card.appendChild(title);
+    }
+    if (post.content) {
+      var content = document.createElement('p');
+      content.className = 'community-card-content';
+      content.textContent = post.content;
+      card.appendChild(content);
+    }
+    if (Array.isArray(post.images) && post.images.length) {
+      var imageGrid = document.createElement('div');
+      imageGrid.className = 'community-images community-images-' +
+        String(Math.min(3, post.images.length));
+      post.images.slice(0, 9).forEach(function (url) {
+        var image = document.createElement('img');
+        image.src = url;
+        image.alt = '帖子图片';
+        image.loading = 'lazy';
+        image.referrerPolicy = 'no-referrer';
+        image.addEventListener('error', function () { image.remove(); });
+        imageGrid.appendChild(image);
+      });
+      card.appendChild(imageGrid);
+    }
+    if (Array.isArray(post.tags) && post.tags.length) {
+      var tags = document.createElement('div');
+      tags.className = 'community-tags';
+      post.tags.forEach(function (tag) {
+        var chip = document.createElement('span');
+        chip.textContent = tag;
+        tags.appendChild(chip);
+      });
+      card.appendChild(tags);
+    }
+    var stats = document.createElement('div');
+    stats.className = 'community-stats';
+    stats.innerHTML =
+      '<span>评论 <b></b></span><span>赞 <b></b></span><span>转发 <b></b></span>';
+    var values = stats.querySelectorAll('b');
+    values[0].textContent = compactCount(post.commentCount);
+    values[1].textContent = compactCount(post.likeCount);
+    values[2].textContent = compactCount(post.forwardCount);
+    card.appendChild(stats);
+    card.setAttribute('aria-label',
+      (post.author || '同花顺用户') + ' ' + (post.title || post.content || '社区帖子'));
+    return card;
+  }
+
+  function fillCommunityAvatar(target, post) {
+    target.replaceChildren();
+    if (post && post.avatar) {
+      var image = document.createElement('img');
+      image.src = post.avatar;
+      image.alt = '';
+      image.referrerPolicy = 'no-referrer';
+      image.addEventListener('error', function () {
+        target.replaceChildren(document.createTextNode(String(post.author || '同').slice(0, 1)));
+      });
+      target.appendChild(image);
+    } else {
+      target.textContent = String((post && post.author) || '同').slice(0, 1);
+    }
+  }
+
+  function createCommunityComment(comment, rootId, child) {
+    var item = document.createElement('article');
+    item.className = child ? 'community-comment community-comment-reply' : 'community-comment';
+    item.dataset.commentId = String(comment.id || '');
+    var header = document.createElement('div');
+    header.className = 'community-comment-header';
+    var avatar = document.createElement('div');
+    avatar.className = 'community-avatar community-comment-avatar';
+    fillCommunityAvatar(avatar, comment);
+    var identity = document.createElement('div');
+    identity.className = 'community-comment-identity';
+    var author = document.createElement('strong');
+    author.textContent = comment.author || '同花顺用户';
+    if (comment.isAuthor) {
+      var owner = document.createElement('i');
+      owner.textContent = '作者';
+      author.appendChild(owner);
+    }
+    var time = document.createElement('span');
+    time.textContent = communityTime(comment.publishedAt);
+    identity.appendChild(author);
+    identity.appendChild(time);
+    header.appendChild(avatar);
+    header.appendChild(identity);
+    item.appendChild(header);
+    var content = document.createElement('p');
+    if (comment.replyTo && child) {
+      var replyTo = document.createElement('b');
+      replyTo.textContent = '回复 @' + comment.replyTo + '：';
+      content.appendChild(replyTo);
+    }
+    content.appendChild(document.createTextNode(comment.content || ''));
+    item.appendChild(content);
+
+    if (!child) {
+      var replies = Array.isArray(comment.replies) ? comment.replies : [];
+      if (replies.length) {
+        var replyList = document.createElement('div');
+        replyList.className = 'community-comment-replies';
+        replies.forEach(function (reply) {
+          replyList.appendChild(createCommunityComment(reply, comment.id, true));
+        });
+        item.appendChild(replyList);
+      }
+      var replyCount = Math.max(number(comment.replyCount), replies.length);
+      if (replyCount > replies.length) {
+        var more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'community-replies-more';
+        more.dataset.communityRepliesRoot = String(rootId || comment.id || '');
+        if (state.communityDetail.repliesLoading[String(comment.id)]) {
+          more.disabled = true;
+          more.textContent = '正在加载全部回复…';
+        } else {
+          more.textContent = '展开全部 ' + String(replyCount) + ' 条回复';
+        }
+        item.appendChild(more);
+      }
+      var replyError = state.communityDetail.repliesError[String(comment.id)];
+      if (replyError) {
+        var error = document.createElement('div');
+        error.className = 'community-replies-error';
+        error.textContent = replyError;
+        item.appendChild(error);
+      }
+    }
+    return item;
+  }
+
+  function renderCommunityDetail() {
+    var detail = state.communityDetail;
+    var page = byId('communityDetailPage');
+    page.classList.toggle('hidden', !detail.visible);
+    if (!detail.visible) {
+      return;
+    }
+    var post = detail.post || {};
+    byId('communityDetailStock').textContent = state.community.name || state.community.code || '';
+    fillCommunityAvatar(byId('communityDetailAvatar'), post);
+    byId('communityDetailAuthor').textContent = post.author || '同花顺用户';
+    var meta = [communityTime(post.publishedAt), detail.ipLocation ? 'IP属地 ' + detail.ipLocation : '']
+      .filter(Boolean)
+      .join(' · ');
+    byId('communityDetailMeta').textContent = meta;
+    var title = byId('communityDetailTitle');
+    title.textContent = post.title || '';
+    title.classList.toggle('hidden', !post.title);
+    byId('communityDetailContent').textContent = post.content || (detail.loading ? '正在加载完整正文…' : '');
+    var images = byId('communityDetailImages');
+    images.replaceChildren();
+    (Array.isArray(post.images) ? post.images : []).forEach(function (url) {
+      var image = document.createElement('img');
+      image.src = url;
+      image.alt = '帖子图片';
+      image.loading = 'lazy';
+      image.referrerPolicy = 'no-referrer';
+      image.addEventListener('error', function () { image.remove(); });
+      images.appendChild(image);
+    });
+    var tags = byId('communityDetailTags');
+    tags.replaceChildren();
+    (Array.isArray(post.tags) ? post.tags : []).forEach(function (tag) {
+      var chip = document.createElement('span');
+      chip.textContent = tag;
+      tags.appendChild(chip);
+    });
+    byId('communityDetailStats').innerHTML =
+      '<span>评论 <b>' + compactCount(detail.commentTotal || post.commentCount) +
+      '</b></span><span>赞 <b>' + compactCount(post.likeCount) +
+      '</b></span><span>转发 <b>' + compactCount(post.forwardCount) + '</b></span>';
+    byId('communityCommentTotal').textContent = compactCount(detail.commentTotal);
+    byId('communityDetailRefresh').classList.toggle('loading', detail.loading);
+    byId('communityDetailExternal').classList.toggle('hidden', !post.url);
+
+    var comments = byId('communityComments');
+    comments.replaceChildren();
+    detail.comments.forEach(function (comment) {
+      comments.appendChild(createCommunityComment(comment, comment.id, false));
+    });
+    var status = byId('communityCommentsStatus');
+    status.replaceChildren();
+    if (detail.error) {
+      var detailError = document.createElement('span');
+      detailError.textContent = detail.error;
+      var retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'community-detail-retry community-retry';
+      retry.textContent = '重试';
+      status.appendChild(detailError);
+      status.appendChild(retry);
+    } else if (detail.commentsError) {
+      var commentError = document.createElement('span');
+      commentError.textContent = detail.commentsError;
+      var commentRetry = document.createElement('button');
+      commentRetry.type = 'button';
+      commentRetry.className = 'community-comments-retry community-retry';
+      commentRetry.textContent = '重试';
+      status.appendChild(commentError);
+      status.appendChild(commentRetry);
+    } else if (detail.loading) {
+      status.textContent = '正在加载完整动态与评论…';
+    } else if (detail.commentsLoading) {
+      status.textContent = '正在加载更多评论…';
+    } else if (!detail.comments.length) {
+      status.textContent = '暂无评论';
+    } else if (!detail.commentsHaveMore) {
+      status.textContent = '全部评论已加载';
+    } else {
+      status.textContent = '继续向下滚动加载更多评论';
+    }
+  }
+
+  function renderCommunity() {
+    var community = state.community;
+    var detailVisible = state.communityDetail.visible;
+    byId('sidebar').classList.toggle('hidden', community.visible || detailVisible);
+    byId('communityPage').classList.toggle('hidden', !community.visible || detailVisible);
+    renderCommunityDetail();
+    if (!community.visible || detailVisible) {
+      return;
+    }
+    hideTooltip();
+    hideContextMenu();
+    hideWatchGroupContextMenu();
+    byId('communityName').textContent = community.name || '同花顺社区';
+    byId('communityCode').textContent = community.code || '';
+    byId('communityRefresh').classList.toggle('loading', community.loading);
+
+    var notice = byId('communityNotice');
+    notice.textContent = community.warning || '';
+    notice.classList.toggle('hidden', !community.warning);
+    var feed = byId('communityFeed');
+    var expectedPosts = Object.create(null);
+    community.posts.forEach(function (post) {
+      expectedPosts[post.id] = true;
+      var existing = Array.prototype.find.call(feed.children, function (card) {
+        return card.dataset.postId === String(post.id);
+      });
+      feed.appendChild(existing || createCommunityCard(post));
+    });
+    Array.prototype.slice.call(feed.children).forEach(function (card) {
+      if (!expectedPosts[card.dataset.postId]) {
+        card.remove();
+      }
+    });
+    var status = byId('communityStatus');
+    status.replaceChildren();
+    if (community.error) {
+      var errorText = document.createElement('span');
+      errorText.textContent = community.error;
+      var retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'community-retry';
+      retry.textContent = '重试';
+      status.appendChild(errorText);
+      status.appendChild(retry);
+    } else if (community.loading) {
+      status.textContent = community.posts.length ? '正在加载更多…' : '正在加载社区内容…';
+    } else if (!community.posts.length) {
+      status.textContent = community.warning ? '' : '暂无社区内容';
+    } else if (!community.hasMore) {
+      status.textContent = '已经到底了';
+    } else {
+      status.textContent = '继续向下滚动加载更多';
+    }
+  }
+
   function applyCollapsedState(kind) {
     var section = groupSection(kind);
     if (!section) {
@@ -380,7 +754,9 @@
   }
 
   function persist() {
-    vscode.setState({ collapsed: state.collapsed });
+    vscode.setState({
+      collapsed: state.collapsed
+    });
   }
 
   function setText(id, value) {
@@ -485,6 +861,7 @@
 
   function showContextMenu(row, clientX, clientY) {
     var menu = byId('rowContextMenu');
+    var communityAction = menu.querySelector('[data-context-action="community"]');
     var holdingAction = menu.querySelector('[data-context-action="holding"]');
     var moveGroupAction = menu.querySelector('[data-context-action="move-group"]');
     var removeAction = menu.querySelector('[data-context-action="remove"]');
@@ -493,6 +870,7 @@
       kind: row.dataset.kind,
       groupId: row.dataset.watchGroupId || ''
     };
+    communityAction.classList.toggle('hidden', row.dataset.kind === 'index');
     holdingAction.classList.toggle('hidden', row.dataset.kind === 'index');
     moveGroupAction.classList.toggle('hidden', row.dataset.kind !== 'stock');
     removeAction.textContent = row.dataset.kind === 'stock'
@@ -500,7 +878,7 @@
       : '从侧栏移除';
     hideWatchGroupContextMenu();
     positionContextMenu(menu, clientX, clientY);
-    menu.querySelector('[data-context-action="remove"]').focus();
+    (row.dataset.kind === 'index' ? removeAction : communityAction).focus();
   }
 
   function showWatchGroupContextMenu(header, clientX, clientY) {
@@ -515,6 +893,14 @@
     var createGroup = event.target.closest('[data-create-watch-group]');
     if (createGroup) {
       vscode.postMessage({ type: 'createWatchGroup' });
+      return;
+    }
+    var sectorSortToggle = event.target.closest('[data-sector-sort-toggle]');
+    if (sectorSortToggle) {
+      vscode.postMessage({
+        type: 'toggleSectorSort',
+        kind: sectorSortToggle.getAttribute('data-sector-sort-toggle')
+      });
       return;
     }
     var header = event.target.closest('[data-toggle-group]');
@@ -634,7 +1020,13 @@
     }
     var actionName = action.getAttribute('data-context-action');
     hideContextMenu();
-    if (actionName === 'holding') {
+    if (actionName === 'community') {
+      vscode.postMessage({
+        type: 'openCommunity',
+        code: target.code,
+        sort: state.community.sort
+      });
+    } else if (actionName === 'holding') {
       vscode.postMessage({ type: 'setHolding', code: target.code });
     } else if (actionName === 'move-group') {
       vscode.postMessage({
@@ -666,6 +1058,142 @@
       vscode.postMessage({ type: 'deleteWatchGroup', groupId: groupId });
     }
   });
+
+  byId('communityBack').addEventListener('click', function () {
+    state.community.visible = false;
+    state.communityDetail.visible = false;
+    renderCommunity();
+    vscode.postMessage({ type: 'closeCommunity' });
+  });
+
+  byId('communityDetailBack').addEventListener('click', function () {
+    state.communityDetail.visible = false;
+    state.community.visible = true;
+    renderCommunity();
+    window.scrollTo(0, 0);
+    vscode.postMessage({ type: 'closeCommunityDetail' });
+  });
+
+  byId('communityDetailExternal').addEventListener('click', function () {
+    vscode.postMessage({ type: 'openCommunityPostExternal' });
+  });
+
+  byId('communityDetailRefresh').addEventListener('click', function () {
+    if (state.communityDetail.loading) {
+      return;
+    }
+    state.communityDetail.loading = true;
+    state.communityDetail.error = '';
+    state.communityDetail.commentsError = '';
+    renderCommunityDetail();
+    window.scrollTo(0, 0);
+    vscode.postMessage({ type: 'refreshCommunityDetail' });
+  });
+
+  byId('communityComments').addEventListener('click', function (event) {
+    var button = event.target.closest('[data-community-replies-root]');
+    if (!button || button.disabled) {
+      return;
+    }
+    var rootId = button.getAttribute('data-community-replies-root');
+    state.communityDetail.repliesLoading[rootId] = true;
+    delete state.communityDetail.repliesError[rootId];
+    renderCommunityDetail();
+    vscode.postMessage({ type: 'loadCommunityReplies', rootId: rootId });
+  });
+
+  byId('communityCommentsStatus').addEventListener('click', function (event) {
+    if (event.target.closest('.community-detail-retry')) {
+      state.communityDetail.loading = true;
+      state.communityDetail.error = '';
+      renderCommunityDetail();
+      vscode.postMessage({ type: 'refreshCommunityDetail' });
+    } else if (event.target.closest('.community-comments-retry')) {
+      state.communityDetail.commentsLoading = true;
+      state.communityDetail.commentsError = '';
+      renderCommunityDetail();
+      vscode.postMessage({ type: 'loadMoreCommunityComments' });
+    }
+  });
+
+  byId('communityRefresh').addEventListener('click', function () {
+    if (state.community.loading) {
+      return;
+    }
+    state.community.posts = [];
+    state.community.loading = true;
+    state.community.error = '';
+    state.community.warning = '';
+    state.community.hasMore = true;
+    renderCommunity();
+    window.scrollTo(0, 0);
+    vscode.postMessage({ type: 'refreshCommunity' });
+  });
+
+  function openCommunityCard(event) {
+    var card = event.target.closest('.community-card');
+    if (!card) {
+      return;
+    }
+    vscode.postMessage({ type: 'openCommunityPost', postId: card.dataset.postId });
+  }
+
+  byId('communityFeed').addEventListener('click', openCommunityCard);
+  byId('communityFeed').addEventListener('keydown', function (event) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openCommunityCard(event);
+    }
+  });
+  byId('communityStatus').addEventListener('click', function (event) {
+    if (!event.target.closest('.community-retry')) {
+      return;
+    }
+    state.community.error = '';
+    state.community.loading = true;
+    renderCommunity();
+    vscode.postMessage({
+      type: state.community.posts.length ? 'loadMoreCommunity' : 'refreshCommunity'
+    });
+  });
+
+  function requestMoreCommunity() {
+    if (
+      state.community.visible &&
+      state.community.posts.length &&
+      state.community.hasMore &&
+      !state.community.loading &&
+      !state.community.error
+    ) {
+      state.community.loading = true;
+      renderCommunity();
+      vscode.postMessage({ type: 'loadMoreCommunity' });
+    }
+  }
+
+  var communityObserver = new IntersectionObserver(function (entries) {
+    if (entries.some(function (entry) { return entry.isIntersecting; })) {
+      requestMoreCommunity();
+    }
+  }, { rootMargin: '360px 0px' });
+  communityObserver.observe(byId('communitySentinel'));
+
+  var communityCommentsObserver = new IntersectionObserver(function (entries) {
+    if (
+      entries.some(function (entry) { return entry.isIntersecting; }) &&
+      state.communityDetail.visible &&
+      state.communityDetail.comments.length &&
+      state.communityDetail.commentsHaveMore &&
+      !state.communityDetail.loading &&
+      !state.communityDetail.commentsLoading &&
+      !state.communityDetail.commentsError
+    ) {
+      state.communityDetail.commentsLoading = true;
+      renderCommunityDetail();
+      vscode.postMessage({ type: 'loadMoreCommunityComments' });
+    }
+  }, { rootMargin: '360px 0px' });
+  communityCommentsObserver.observe(byId('communityCommentsSentinel'));
 
   byId('sidebar').addEventListener('keydown', function (event) {
     var sectorRow = event.target.closest('.sector-row');
@@ -739,11 +1267,108 @@
       render();
     } else if (message.type === 'sectors') {
       state.sectors = message.data || state.sectors;
+      state.sectorSortModes = Object.assign(
+        { industry: 'percent', concept: 'percent' },
+        message.sortModes || {}
+      );
       render();
+    } else if (message.type === 'communityState') {
+      var wasVisible = state.community.visible;
+      state.community.visible = true;
+      state.community.code = String(message.code || '');
+      state.community.name = String(message.name || '');
+      state.community.sort = 'hot';
+      var incoming = Array.isArray(message.posts) ? message.posts : [];
+      if (message.append) {
+        var known = Object.create(null);
+        state.community.posts.forEach(function (post) { known[post.id] = true; });
+        incoming.forEach(function (post) {
+          if (!known[post.id]) {
+            known[post.id] = true;
+            state.community.posts.push(post);
+          }
+        });
+      } else {
+        state.community.posts = incoming;
+      }
+      state.community.loading = Boolean(message.loading);
+      state.community.hasMore = Boolean(message.hasMore);
+      state.community.warning = String(message.warning || '');
+      state.community.error = String(message.error || '');
+      persist();
+      renderCommunity();
+      if (!wasVisible || !message.append) {
+        window.scrollTo(0, 0);
+      }
+    } else if (message.type === 'communityDetailState') {
+      var wasDetailVisible = state.communityDetail.visible;
+      state.community.visible = true;
+      state.communityDetail.visible = true;
+      state.communityDetail.post = message.post || state.communityDetail.post;
+      var detailComments = Array.isArray(message.comments) ? message.comments : [];
+      if (message.append) {
+        var knownComments = Object.create(null);
+        state.communityDetail.comments.forEach(function (comment) {
+          knownComments[comment.id] = true;
+        });
+        detailComments.forEach(function (comment) {
+          if (!knownComments[comment.id]) {
+            knownComments[comment.id] = true;
+            state.communityDetail.comments.push(comment);
+          }
+        });
+      } else {
+        state.communityDetail.comments = detailComments;
+        state.communityDetail.repliesLoading = Object.create(null);
+        state.communityDetail.repliesError = Object.create(null);
+      }
+      if (typeof message.ipLocation === 'string') {
+        state.communityDetail.ipLocation = message.ipLocation;
+      }
+      state.communityDetail.loading = Boolean(message.loading);
+      state.communityDetail.commentsLoading = Boolean(message.commentsLoading);
+      state.communityDetail.commentsHaveMore = Boolean(message.commentsHaveMore);
+      state.communityDetail.commentTotal = number(message.commentTotal);
+      state.communityDetail.error = String(message.error || '');
+      state.communityDetail.commentsError = '';
+      renderCommunity();
+      if (!wasDetailVisible || !message.append) {
+        window.scrollTo(0, 0);
+      }
+    } else if (message.type === 'communityDetailClosed') {
+      state.communityDetail.visible = false;
+      state.community.visible = true;
+      renderCommunity();
+    } else if (message.type === 'communityCommentsLoading') {
+      state.communityDetail.commentsLoading = Boolean(message.loading);
+      state.communityDetail.commentsError = '';
+      renderCommunityDetail();
+    } else if (message.type === 'communityCommentsError') {
+      state.communityDetail.commentsLoading = false;
+      state.communityDetail.commentsError = String(message.error || '同花顺评论加载失败');
+      renderCommunityDetail();
+    } else if (message.type === 'communityRepliesLoading') {
+      state.communityDetail.repliesLoading[String(message.rootId || '')] = true;
+      renderCommunityDetail();
+    } else if (message.type === 'communityReplies') {
+      var replyRootId = String(message.rootId || '');
+      delete state.communityDetail.repliesLoading[replyRootId];
+      var rootComment = state.communityDetail.comments.find(function (comment) {
+        return String(comment.id) === replyRootId;
+      });
+      if (message.error) {
+        state.communityDetail.repliesError[replyRootId] = String(message.error);
+      } else if (rootComment) {
+        rootComment.replies = Array.isArray(message.replies) ? message.replies : [];
+        rootComment.replyCount = rootComment.replies.length;
+        delete state.communityDetail.repliesError[replyRootId];
+      }
+      renderCommunityDetail();
     }
   });
 
   Object.keys(state.collapsed).forEach(applyCollapsedState);
+  renderCommunity();
   document.body.classList.remove('booting');
   vscode.postMessage({ type: 'ready' });
 })();

@@ -3,6 +3,14 @@ import {
   ChartInterval,
   ChartPayload,
   CloudStock,
+  CommunityComment,
+  CommunityCommentCursor,
+  CommunityCommentPage,
+  CommunityCursor,
+  CommunityPage,
+  CommunityPost,
+  CommunityPostDetail,
+  CommunityPostSort,
   INDEX_CODES,
   MarketFilter,
   NewsItem,
@@ -11,6 +19,7 @@ import {
   SearchResult,
   SectorBoard,
   SectorBoardKind,
+  SectorBoardSort,
   SectorConstituent,
   SectorOverview,
   StockProfile,
@@ -39,6 +48,657 @@ function toNumber(value: unknown, fallback = 0): number {
 
 function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
+}
+
+interface HtmlTableCell {
+  html: string;
+  text: string;
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/gi, (_match, code) =>
+      String.fromCodePoint(Number.parseInt(code, 16))
+    )
+    .replace(/&#(\d+);/g, (_match, code) => String.fromCodePoint(Number(code)))
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&');
+}
+
+function htmlText(value: string): string {
+  return decodeHtmlEntities(
+    value
+      .replace(/<br\s*\/?\s*>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
+}
+
+function communityPlainText(value: unknown): string {
+  return decodeHtmlEntities(
+    String(value || '')
+      .replace(
+        /<hx_stock>([\s\S]*?)<\/hx_stock>/gi,
+        (_match, stock) => {
+          const name = String(stock).match(/stockName:([^,]+)/i)?.[1]?.trim() || '';
+          const code = String(stock).match(/stockCode:(\d{6})/i)?.[1] || '';
+          return name ? '$' + name + (code ? '(' + code + ')' : '') + '$' : code;
+        }
+      )
+      .replace(/<img\b[^>]*\btitle=(['"])(.*?)\1[^>]*>/gi, '$2')
+      .replace(/<br\s*\/?\s*>/gi, '\n')
+      .replace(/<\/p\s*>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/[ \t\f\v]+/g, ' ')
+      .replace(/\n\s*\n+/g, '\n')
+      .trim()
+  );
+}
+
+function communityHttpsUrl(value: unknown): string {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+  const normalized = raw.startsWith('//')
+    ? 'https:' + raw
+    : raw.startsWith('/')
+      ? 'https://t.10jqka.com.cn' + raw
+      : raw;
+  try {
+    const parsed = new URL(normalized);
+    const hostname = parsed.hostname.toLowerCase();
+    if (
+      parsed.protocol !== 'https:' ||
+      !(
+        hostname === '10jqka.com.cn' ||
+        hostname.endsWith('.10jqka.com.cn') ||
+        hostname === 'thsi.cn' ||
+        hostname.endsWith('.thsi.cn')
+      )
+    ) {
+      return '';
+    }
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function communityTimestamp(value: unknown): number {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(String(value || ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function communityContentId(value: unknown): string {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+  if (/^[a-z0-9]+$/i.test(raw)) {
+    return raw;
+  }
+  try {
+    const url = new URL(raw.startsWith('//') ? 'https:' + raw : raw);
+    return String(url.searchParams.get('contentId') || url.searchParams.get('content_id') || '');
+  } catch {
+    return '';
+  }
+}
+
+/** Converts one public 同花顺 feed row to the extension's read-only card model. */
+export function parseTonghuashunCommunityPost(item: any): CommunityPost | null {
+  const info = item?.info || {};
+  const author = item?.author || {};
+  const stat = item?.stat || {};
+  const id = String(info.id || item?.id || '').trim();
+  if (!id) {
+    return null;
+  }
+  const imageCandidates = [
+    ...asArray<unknown>(item?.image?.urls),
+    ...asArray<any>(item?.share?.display_info?.images).map((image) => image?.url),
+    item?.share?.display_info?.image
+  ];
+  const images = Array.from(
+    new Set(imageCandidates.map(communityHttpsUrl).filter(Boolean))
+  ).slice(0, 9);
+  const title = communityPlainText(item?.title?.content || item?.title || '');
+  const content = communityPlainText(
+    item?.abstract?.content || item?.content?.content || item?.content || ''
+  );
+  const tags = asArray<any>(item?.tag?.tags)
+    .map((tag) => String(tag?.name || '').trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  return {
+    id,
+    contentId: communityContentId(
+      info.content_id || info.contentId || info.jump_url || info.client_url || item?.jump_url
+    ),
+    author: String(author.name || author.nickname || '同花顺用户').trim(),
+    authorDescription: String(author.description || '').trim(),
+    avatar: communityHttpsUrl(author.avatar),
+    title,
+    content,
+    images,
+    publishedAt: communityTimestamp(info.ctime || item?.ctime),
+    likeCount: toNumber(stat.like_num ?? stat.likeNum),
+    commentCount: toNumber(stat.comment_num ?? stat.commentNum),
+    forwardCount: toNumber(stat.forward_num ?? stat.forwardNum),
+    url: communityHttpsUrl(info.jump_url || info.client_url || item?.jump_url),
+    tags
+  };
+}
+
+/** Converts a public 同花顺 comment row, including the replies embedded in it. */
+export function parseTonghuashunCommunityComment(item: any): CommunityComment | null {
+  const id = String(item?.id || '').trim();
+  if (!id) {
+    return null;
+  }
+  const user = item?.from_user || item?.fromUser || {};
+  const inReplyToUser = item?.in_reply_to_user || item?.inReplyToUser || {};
+  const replies = asArray<any>(item?.child_comments ?? item?.childComments)
+    .map(parseTonghuashunCommunityComment)
+    .filter((reply): reply is CommunityComment => Boolean(reply));
+  return {
+    id,
+    author: String(user.nickname || user.name || '同花顺用户').trim(),
+    avatar: communityHttpsUrl(user.avatar),
+    content: communityPlainText(item?.content),
+    publishedAt: communityTimestamp(item?.ctime),
+    replyTo: String(inReplyToUser.nickname || inReplyToUser.name || '').trim(),
+    isAuthor: Boolean(toNumber(user.is_article_author ?? user.isArticleAuthor)),
+    replyCount: Math.max(toNumber(item?.reply_num ?? item?.replyNum), replies.length),
+    replies
+  };
+}
+
+/** Parses the public post-info payload and keeps a feed card as a safe fallback. */
+export function parseTonghuashunCommunityPostDetail(
+  payload: any,
+  fallback: CommunityPost
+): { post: CommunityPost; ipLocation: string } {
+  const statusCode = toNumber(payload?.status_code ?? payload?.statusCode, -1);
+  const raw = payload?.data?.post;
+  if (statusCode !== 0 || !raw) {
+    throw new Error(String(payload?.status_msg || payload?.statusMsg || '同花顺帖子详情暂不可用'));
+  }
+  const user = raw.user || {};
+  const stat = raw.stat || {};
+  const images = Array.from(
+    new Set(
+      asArray<unknown>(raw?.ext?.att_img?.img_urls ?? raw?.ext?.attImg?.imgUrls)
+        .map(communityHttpsUrl)
+        .filter(Boolean)
+    )
+  ).slice(0, 18);
+  const forumName = String(raw?.forum?.name || payload?.data?.relate_forum?.name || '').trim();
+  const contentId = communityContentId(raw.content_id || raw.contentId || raw.jump_url);
+  const post: CommunityPost = {
+    ...fallback,
+    id: String(raw.id || raw.pid || fallback.id),
+    contentId: contentId || fallback.contentId,
+    author: String(user.nickname || user.name || fallback.author || '同花顺用户').trim(),
+    authorDescription: String(user.description || fallback.authorDescription || '').trim(),
+    avatar: communityHttpsUrl(user.avatar) || fallback.avatar,
+    title: communityPlainText(raw.title || fallback.title),
+    content: communityPlainText(raw.content || raw.short_content || fallback.content),
+    images: images.length ? images : fallback.images,
+    publishedAt: communityTimestamp(raw.ctime) || fallback.publishedAt,
+    likeCount: Math.max(toNumber(stat.like ?? stat.like_num), fallback.likeCount),
+    commentCount: Math.max(toNumber(stat.reply ?? stat.comment_num), fallback.commentCount),
+    forwardCount: Math.max(toNumber(stat.forward ?? stat.share), fallback.forwardCount),
+    url: communityHttpsUrl(raw.jump_url || raw.pc_jump_url) || fallback.url,
+    tags: forumName ? Array.from(new Set([forumName, ...fallback.tags])) : fallback.tags
+  };
+  const location = raw.ip_location || raw.ipLocation || {};
+  return {
+    post,
+    ipLocation: String(location.province_name || location.provinceName || location.area_name || '').trim()
+  };
+}
+
+function htmlTableRows(source: string): HtmlTableCell[][] {
+  const rows: HtmlTableCell[][] = [];
+  for (const rowMatch of source.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = Array.from(
+      rowMatch[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi),
+      (cellMatch) => ({
+        html: cellMatch[1],
+        text: htmlText(cellMatch[1])
+      })
+    );
+    if (cells.length) {
+      rows.push(cells);
+    }
+  }
+  return rows;
+}
+
+function jsonpPayload<T>(source: string): T {
+  const start = source.indexOf('(');
+  const end = source.lastIndexOf(')');
+  if (start < 0 || end <= start) {
+    throw new Error('同花顺 JSONP 数据格式无效');
+  }
+  return JSON.parse(source.slice(start + 1, end)) as T;
+}
+
+function thsNumber(value: string): number {
+  return toNumber(value.replace(/[,，%亿万手元]/g, '').replace(/--/g, ''));
+}
+
+function thsAmount(value: string): number {
+  const amount = thsNumber(value);
+  if (/亿/.test(value)) {
+    return amount * 100_000_000;
+  }
+  if (/万/.test(value)) {
+    return amount * 10_000;
+  }
+  return amount;
+}
+
+function thsStockCode(value: string): string {
+  const digits = value.trim();
+  if (!/^\d{6}$/.test(digits)) {
+    return '';
+  }
+  if (digits.startsWith('6')) {
+    return 'sh' + digits;
+  }
+  if (/^(4|8|9)/.test(digits)) {
+    return 'bj' + digits;
+  }
+  return 'sz' + digits;
+}
+
+function emptyThsSectorBoard(
+  code: string,
+  name: string,
+  kind: SectorBoardKind,
+  secid = code,
+  updatedAt = Date.now()
+): SectorBoard {
+  return {
+    code,
+    secid,
+    name,
+    kind,
+    price: 0,
+    percent: 0,
+    change: 0,
+    turnover: 0,
+    netInflow: 0,
+    upCount: 0,
+    downCount: 0,
+    leaderName: '',
+    leaderCode: '',
+    leaderSecid: '',
+    leaderPercent: 0,
+    threeDayPercent: 0,
+    threeMinutePercent: 0,
+    updatedAt
+  };
+}
+
+/** Parses the public 同花顺行业 table without mixing in other vendors' taxonomies. */
+export function parseTonghuashunIndustryBoards(
+  source: string,
+  updatedAt = Date.now()
+): SectorBoard[] {
+  const boards = new Map<string, SectorBoard>();
+  for (const match of source.matchAll(
+    /<a\b[^>]*href=["'][^"']*\/thshy\/detail\/code\/(\d{6})\/["'][^>]*>([\s\S]*?)<\/a>/gi
+  )) {
+    const code = match[1];
+    const name = htmlText(match[2]);
+    if (name && !boards.has(code)) {
+      boards.set(code, emptyThsSectorBoard(code, name, 'industry', code, updatedAt));
+    }
+  }
+  for (const cells of htmlTableRows(source)) {
+    if (cells.length < 12) {
+      continue;
+    }
+    const boardMatch = cells[1].html.match(/\/thshy\/detail\/code\/(\d{6})\//i);
+    if (!boardMatch) {
+      continue;
+    }
+    const code = boardMatch[1];
+    const price = thsNumber(cells[8].text);
+    const percent = thsNumber(cells[2].text);
+    const previousPrice = percent === -100 ? 0 : price / (1 + percent / 100);
+    const leaderDigits =
+      cells[9].html.match(/stockpage\.10jqka\.com\.cn\/(\d{6})\//i)?.[1] || '';
+    const leaderCode = thsStockCode(leaderDigits);
+    boards.set(code, {
+      ...emptyThsSectorBoard(code, cells[1].text, 'industry', code, updatedAt),
+      price,
+      percent,
+      change: previousPrice ? price - previousPrice : 0,
+      netInflow: thsNumber(cells[5].text) * 100_000_000,
+      upCount: thsNumber(cells[6].text),
+      downCount: thsNumber(cells[7].text),
+      leaderName: cells[9].text,
+      leaderCode,
+      leaderSecid: leaderCode ? codeToSecid(leaderCode) : '',
+      leaderPercent: thsNumber(cells[11].text)
+    });
+  }
+  return Array.from(boards.values());
+}
+
+/** Parses 同花顺's own concept directory and its embedded live ranking payload. */
+export function parseTonghuashunConceptBoards(
+  source: string,
+  updatedAt = Date.now()
+): SectorBoard[] {
+  const boards = new Map<string, SectorBoard>();
+  for (const match of source.matchAll(
+    /<a\b[^>]*href=["'][^"']*\/gn\/detail\/code\/(\d{6})\/["'][^>]*>([\s\S]*?)<\/a>/gi
+  )) {
+    const code = match[1];
+    const name = htmlText(match[2]);
+    if (name && !boards.has(code)) {
+      boards.set(code, emptyThsSectorBoard(code, name, 'concept', code, updatedAt));
+    }
+  }
+
+  const input = source.match(/<input\b[^>]*\bid=["']gnSection["'][^>]*>/i)?.[0] || '';
+  const encodedPayload = input.match(/\bvalue=(["'])([\s\S]*?)\1/i)?.[2] || '';
+  if (encodedPayload) {
+    try {
+      const payload = JSON.parse(decodeHtmlEntities(encodedPayload)) as Record<
+        string,
+        Record<string, unknown>
+      >;
+      for (const item of Object.values(payload)) {
+        const code = String(item.cid || '').trim();
+        const name = String(item.platename || '').trim();
+        if (!/^\d{6}$/.test(code) || !name) {
+          continue;
+        }
+        const current =
+          boards.get(code) ||
+          emptyThsSectorBoard(code, name, 'concept', String(item.platecode || code), updatedAt);
+        boards.set(code, {
+          ...current,
+          name,
+          secid: String(item.platecode || current.secid || code),
+          percent: toNumber(item['199112']),
+          netInflow: toNumber(item.zjjlr) * 100_000_000,
+          updatedAt
+        });
+      }
+    } catch {
+      // The directory links above remain useful if 同花顺 temporarily omits the payload.
+    }
+  }
+  return Array.from(boards.values());
+}
+
+/** Parses the headline and definition shown on an official 同花顺 board detail page. */
+export function parseTonghuashunSectorBoardDetail(
+  source: string,
+  kind: SectorBoardKind,
+  routeCode: string,
+  base?: SectorBoard,
+  updatedAt = Date.now()
+): SectorBoard {
+  const heading = source.match(
+    /<h3[^>]*>\s*([\s\S]*?)<span[^>]*>\s*(88\d{4})\s*<\/span>\s*<\/h3>/i
+  );
+  const name = htmlText(heading?.[1] || base?.name || '');
+  const secid = String(heading?.[2] || base?.secid || routeCode).trim();
+  const price = thsNumber(
+    htmlText(source.match(/class=["'][^"']*board-xj[^"']*["'][^>]*>([\s\S]*?)<\/span>/i)?.[1] || '')
+  );
+  const changeText = htmlText(
+    source.match(/class=["'][^"']*board-zdf[^"']*["'][^>]*>([\s\S]*?)<\/p>/i)?.[1] || ''
+  );
+  const changes = Array.from(changeText.matchAll(/[+-]?\d+(?:\.\d+)?%?/g), (match) => match[0]);
+  const info = new Map<string, string>();
+  const infoSource = source.match(
+    /class=["'][^"']*board-infos[^"']*["'][^>]*>([\s\S]*?)<\/div>/i
+  )?.[1];
+  for (const match of String(infoSource || '').matchAll(
+    /<dl[^>]*>[\s\S]*?<dt[^>]*>([\s\S]*?)<\/dt>[\s\S]*?<dd[^>]*>([\s\S]*?)<\/dd>[\s\S]*?<\/dl>/gi
+  )) {
+    info.set(htmlText(match[1]), htmlText(match[2]));
+  }
+  const definition = htmlText(
+    source.match(
+      /class=["'][^"']*board-txt[^"']*["'][^>]*>[\s\S]*?<h4[^>]*>\s*定义\s*<\/h4>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/i
+    )?.[1] || ''
+  );
+  const value = base || emptyThsSectorBoard(routeCode, name, kind, secid, updatedAt);
+  const tradingStat = (label: string, previous: number | undefined): number | undefined => {
+    const entry = Array.from(info.entries()).find(([key]) => key.replace(/[（(].*$/, '').trim() === label);
+    if (!entry || !/\d/.test(entry[1])) return previous;
+    const unit = entry[1].match(/[亿万千手股元]+/)?.[0] || entry[0].match(/[（(]([^）)]+)[）)]/)?.[1] || '';
+    const factor = unit.includes('亿') ? 1e8 : unit.includes('万') ? 1e4 : unit.includes('千') ? 1e3 : 1;
+    return thsNumber(entry[1]) * factor * (label === '成交量' && !unit.includes('股') ? 100 : 1);
+  };
+  return {
+    ...value,
+    code: routeCode,
+    secid,
+    name: name || value.name,
+    kind,
+    price: price || value.price,
+    change: changes.length ? thsNumber(changes[0]) : value.change,
+    percent: changes.length > 1 ? thsNumber(changes[1]) : value.percent,
+    open: thsNumber(info.get('今开') || '') || value.open,
+    previousClose: thsNumber(info.get('昨收') || '') || value.previousClose,
+    low: thsNumber(info.get('最低') || '') || value.low,
+    high: thsNumber(info.get('最高') || '') || value.high,
+    volume: tradingStat('成交量', value.volume),
+    amount: tradingStat('成交额', value.amount),
+    description: definition || value.description,
+    updatedAt
+  };
+}
+
+/** Parses the first official 同花顺 constituent ranking page for a board. */
+export function parseTonghuashunSectorConstituents(
+  source: string,
+  updatedAt = Date.now()
+): SectorConstituent[] {
+  const rows: SectorConstituent[] = [];
+  for (const cells of htmlTableRows(source)) {
+    if (cells.length < 13 || !/^\d{6}$/.test(cells[1].text)) {
+      continue;
+    }
+    const code = thsStockCode(cells[1].text);
+    if (!code || !cells[2].text) {
+      continue;
+    }
+    rows.push({
+      code,
+      secid: codeToSecid(code),
+      name: cells[2].text,
+      price: thsNumber(cells[3].text),
+      percent: thsNumber(cells[4].text),
+      change: thsNumber(cells[5].text),
+      turnover: thsNumber(cells[7].text),
+      netInflow: 0,
+      volumeRatio: thsNumber(cells[8].text),
+      amplitude: thsNumber(cells[9].text),
+      amount: thsAmount(cells[10].text),
+      pe: cells.length > 13 ? thsNumber(cells[13].text) : 0,
+      marketCap: thsAmount(cells[12].text),
+      updatedAt
+    });
+  }
+  return rows;
+}
+
+interface TonghuashunBlockRankPayload {
+  blocks?: Record<string, unknown> & { subcodeCount?: unknown };
+  block?: Record<string, unknown> & { subcodeCount?: unknown };
+  items?: Array<Record<string, unknown>>;
+}
+
+/** Board volume and constituent quote field 13 both use shares. */
+export function withSectorTradingTotals(board: SectorBoard, rows: SectorConstituent[]): SectorBoard {
+  const sum = (field: 'volume' | 'amount'): number | undefined => {
+    if (!rows.length || rows.some(row => row[field] === undefined || !Number.isFinite(row[field]))) return undefined;
+    return rows.reduce((total, row) => total + Number(row[field]), 0);
+  };
+  return { ...board, volume: board.volume ?? sum('volume'), amount: board.amount ?? sum('amount') };
+}
+
+/** Parses the live board headline bundled with a mobile quote-bridge response. */
+export function parseTonghuashunBlockRankBoard(
+  source: string,
+  kind: SectorBoardKind,
+  routeCode: string,
+  base?: SectorBoard,
+  updatedAt = Date.now()
+): SectorBoard {
+  const payload = jsonpPayload<TonghuashunBlockRankPayload>(source);
+  const block = payload.block || payload.blocks || {};
+  const secid = String(base?.secid || routeCode).trim();
+  const value =
+    base || emptyThsSectorBoard(routeCode, String(block.name || ''), kind, secid, updatedAt);
+  return {
+    ...value,
+    code: routeCode,
+    secid,
+    name: String(block.name || value.name).trim(),
+    kind,
+    price: toNumber(block['10'], value.price),
+    percent: toNumber(block['199112'], value.percent),
+    change: toNumber(block['264648'], value.change),
+    constituentCount: toNumber(block.subcodeCount, value.constituentCount),
+    updatedAt
+  };
+}
+
+/** Parses the exact-size board ranking returned by 同花顺's mobile quote bridge. */
+export function parseTonghuashunBlockRankBoards(
+  source: string,
+  kind: SectorBoardKind,
+  updatedAt = Date.now()
+): SectorBoard[] {
+  const payload = jsonpPayload<TonghuashunBlockRankPayload>(source);
+  return asArray<Record<string, unknown>>(payload.items)
+    .map((item) => {
+      const code = String(item['5'] || '').trim();
+      const name = String(item['55'] || '').trim();
+      const leaderDigits = String(item['275'] || '').trim();
+      const leaderCode = thsStockCode(leaderDigits);
+      return {
+        ...emptyThsSectorBoard(code, name, kind, code, updatedAt),
+        price: toNumber(item['10']),
+        percent: toNumber(item['199112']),
+        change: toNumber(item['264648']),
+        leaderCode,
+        leaderSecid: leaderCode ? codeToSecid(leaderCode) : ''
+      };
+    })
+    .filter((item) => /^\d{6}$/.test(item.code) && item.name.length > 0);
+}
+
+interface TonghuashunHotPlatePayload {
+  status_code?: unknown;
+  data?: {
+    plate_list?: Array<Record<string, unknown>>;
+  };
+}
+
+/** Parses the official 同花顺板块热榜, which already contains exactly TOP20. */
+export function parseTonghuashunHotSectorBoards(
+  source: string,
+  kind: SectorBoardKind,
+  updatedAt = Date.now()
+): SectorBoard[] {
+  const payload = JSON.parse(source) as TonghuashunHotPlatePayload;
+  if (toNumber(payload.status_code, -1) !== 0) {
+    throw new Error('同花顺板块热榜返回失败');
+  }
+  return asArray<Record<string, unknown>>(payload.data?.plate_list)
+    .map((item, index) => {
+      const code = String(item.code || '').trim();
+      const name = String(item.name || '').trim();
+      const rank = toNumber(item.order, index + 1);
+      return {
+        ...emptyThsSectorBoard(code, name, kind, code, updatedAt),
+        percent: toNumber(item.rise_and_fall),
+        heat: toNumber(item.rate),
+        heatRank: rank,
+        heatRankChange: toNumber(item.hot_rank_chg),
+        updatedAt
+      };
+    })
+    .filter((item) => /^\d{6}$/.test(item.code) && item.name.length > 0)
+    .sort((left, right) => (left.heatRank || 0) - (right.heatRank || 0));
+}
+
+/** Parses a complete 同花顺 board constituent payload. */
+export function parseTonghuashunBlockRankConstituents(
+  source: string,
+  updatedAt = Date.now()
+): { total: number; items: SectorConstituent[] } {
+  const payload = jsonpPayload<TonghuashunBlockRankPayload>(source);
+  const items = asArray<Record<string, unknown>>(payload.items)
+    .map((item) => {
+      const code = thsStockCode(String(item['5'] || '').trim());
+      const previousClose = toNumber(item['6']);
+      const high = toNumber(item['8']);
+      const low = toNumber(item['9']);
+      return {
+        code,
+        secid: code ? codeToSecid(code) : '',
+        name: String(item['55'] || '').trim(),
+        price: toNumber(item['10']),
+        percent: toNumber(item['199112']),
+        change: toNumber(item['264648']),
+        turnover: toNumber(item['1968584']),
+        netInflow: 0,
+        amount: item['19'] === undefined || item['19'] === null || item['19'] === ''
+          ? undefined : toNumber(item['19'], NaN),
+        open: toNumber(item['7']),
+        previousClose,
+        high,
+        low,
+        volume: item['13'] === undefined || item['13'] === null || item['13'] === ''
+          ? undefined : toNumber(item['13'], NaN),
+        amplitude: previousClose ? ((high - low) / previousClose) * 100 : 0,
+        pe: toNumber(item['2034120']),
+        marketCap: toNumber(item['3475914']),
+        totalMarketCap: toNumber(item['3541450']),
+        updatedAt
+      };
+    })
+    .filter((item) => Boolean(item.code && item.name));
+  return {
+    total: toNumber(payload.block?.subcodeCount ?? payload.blocks?.subcodeCount, items.length),
+    items
+  };
+}
+
+export function parseTonghuashunPageCount(source: string): number {
+  const pageInfo = source.match(
+    /class=["']page_info["'][^>]*>\s*\d+\s*\/\s*(\d+)/i
+  );
+  const linkedPages = Array.from(
+    source.matchAll(/\/page\/(\d+)\/ajax\/1\//gi),
+    (match) => toNumber(match[1], 1)
+  );
+  return Math.max(1, toNumber(pageInfo?.[1], 1), ...linkedPages);
 }
 
 /** Uses the same stable Eastmoney push upstream selection as LeekFund 4.2.9. */
@@ -141,6 +801,10 @@ function oneMonthAgoShanghaiDateKey(now = new Date()): string {
 const SECTOR_LIST_CACHE_TTL = 60 * 1000;
 const SECTOR_TOP_CACHE_TTL = 10 * 1000;
 const SECTOR_DETAIL_CACHE_TTL = 15 * 1000;
+const TONGHUASHUN_SECTOR_GROUPS: Record<SectorBoardKind, readonly string[]> = {
+  industry: ['8811', '8812'],
+  concept: ['8853', '8854', '8855', '8856', '8857', '8858', '8859', '8860', '8861']
+};
 
 const PRIMARY_INDUSTRY_RULES: Array<{ name: string; pattern: RegExp }> = [
   { name: '电子', pattern: /半导体|元件|消费电子|光学光电子|电子化学|其他电子/ },
@@ -180,15 +844,17 @@ function primaryIndustryOf(subIndustry: string): string {
 }
 
 export class DataService {
+  private readonly sectorRankCache = new Map<string, CacheEntry<string>>();
+  private readonly sectorRankRequests = new Map<string, Promise<string>>();
+  private readonly sectorRankingDirectoryCache = new Map<SectorBoardKind, CacheEntry<SectorBoard[]>>();
+
   private readonly chartCache = new Map<string, CacheEntry<ChartPayload>>();
   private readonly cloudCache = new Map<MarketFilter, CacheEntry<CloudStock[]>>();
   private readonly profileCache = new Map<string, CacheEntry<StockProfile>>();
   private readonly extrasCache = new Map<string, CacheEntry<RealtimeExtras>>();
   private readonly sectorBoardCache = new Map<SectorBoardKind, CacheEntry<SectorBoard[]>>();
-  private readonly topSectorBoardCache = new Map<
-    SectorBoardKind,
-    CacheEntry<SectorBoard[]>
-  >();
+  private readonly topSectorBoardCache = new Map<string, CacheEntry<SectorBoard[]>>();
+  private readonly sectorDetailBoardCache = new Map<string, CacheEntry<SectorBoard>>();
   private readonly sectorConstituentCache = new Map<
     string,
     CacheEntry<SectorConstituent[]>
@@ -206,15 +872,29 @@ export class DataService {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const response = await fetch(resolveEastmoneyRequestUrl(url), {
+        const requestUrl = resolveEastmoneyRequestUrl(url);
+        const isTonghuashunQuotePage = requestUrl.includes('q.10jqka.com.cn/');
+        const response = await fetch(requestUrl, {
           signal: controller.signal,
           headers: {
+            Accept: isTonghuashunQuotePage
+              ? 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+              : 'application/json, text/plain, */*',
             'User-Agent':
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/132 Safari/537.36',
             Referer: url.includes('xueqiu.com')
               ? 'https://xueqiu.com/hq'
-              : url.includes('10jqka.com.cn')
-                ? 'https://eq.10jqka.com.cn/frontend/thsTopRank/index.html'
+              : new URL(url).hostname === 'c.10jqka.com.cn'
+                ? 'https://t.10jqka.com.cn/'
+              : url.includes('10jqka.com.cn/lgt/post/open/api/post/info/') ||
+                  url.includes('10jqka.com.cn/lgt/content/open/api/comment/')
+                ? 'https://c.10jqka.com.cn/m/post/discussDetail/'
+              : url.includes('d.10jqka.com.cn')
+                ? 'https://m.10jqka.com.cn/hq/rank/market.html'
+              : isTonghuashunQuotePage
+                ? 'https://q.10jqka.com.cn/'
+                : url.includes('10jqka.com.cn')
+                  ? 'https://eq.10jqka.com.cn/frontend/thsTopRank/index.html'
                 : url.includes('sina.com.cn')
                   ? 'https://vip.stock.finance.sina.com.cn/'
                   : 'https://quote.eastmoney.com/'
@@ -223,7 +903,12 @@ export class DataService {
         if (!response.ok) {
           throw new Error('HTTP ' + response.status + ' ' + response.statusText);
         }
-        return await response.text();
+        const bytes = await response.arrayBuffer();
+        const contentType = response.headers.get('content-type') || '';
+        const encoding = /charset\s*=\s*(?:gbk|gb2312|gb18030)/i.test(contentType)
+          ? 'gb18030'
+          : 'utf-8';
+        return new TextDecoder(encoding).decode(bytes);
       } catch (error) {
         lastError = error;
         if (attempt < attempts - 1) {
@@ -284,6 +969,253 @@ export class DataService {
       }
     }
     throw lastError instanceof Error ? lastError : new Error('网络请求失败');
+  }
+
+  public async getCommunityPosts(
+    code: string,
+    sort: CommunityPostSort,
+    limit = 20,
+    cursor?: CommunityCursor
+  ): Promise<CommunityPage> {
+    const normalized = code.trim().toLowerCase();
+    if (!/^(sh|sz|bj)\d{6}$/.test(normalized)) {
+      throw new Error('股票代码无效');
+    }
+    if (sort !== 'hot') {
+      throw new Error('社区排序方式无效');
+    }
+    const digits = normalized.slice(2);
+    const marketId = normalized.startsWith('sh')
+      ? '17'
+      : normalized.startsWith('bj')
+        ? '151'
+        : '33';
+    const requested = Math.min(50, Math.max(1, Math.floor(limit)));
+    const collected = [...asArray<CommunityPost>(cursor?.buffered)];
+    const seen = new Set(collected.map((post) => post.id));
+    let next: CommunityCursor = {
+      page: Math.max(1, Math.floor(toNumber(cursor?.page, 1))),
+      lastScore: cursor?.lastScore,
+      lastPublishTime: cursor?.lastPublishTime,
+      startPage: cursor?.startPage
+    };
+    let upstreamHasMore = true;
+    let requests = 0;
+
+    while (collected.length < requested && upstreamHasMore && requests < 6) {
+      requests += 1;
+      const query = new URLSearchParams({
+        code: digits,
+        marketId,
+        page: '1',
+        pageSize: '15'
+      });
+
+      if (next.lastScore !== undefined) {
+        query.set('lastScore', String(next.lastScore));
+      }
+      if (next.lastPublishTime !== undefined) {
+        query.set('lastPublishTime', String(next.lastPublishTime));
+      }
+      if (next.startPage !== undefined) {
+        query.set('startPage', String(next.startPage));
+      }
+      const endpoint = 'hot_feed';
+      const payload = await this.getJson<any>(
+        'https://c.10jqka.com.cn/lgt/post/open/api/forum/content/v1/' +
+          endpoint +
+          '?' +
+          query.toString(),
+        12000,
+        2
+      );
+      const statusCode = toNumber(payload?.status_code ?? payload?.statusCode);
+      if (statusCode !== 0 || !payload?.data) {
+        throw new Error(String(payload?.status_msg || payload?.message || '同花顺社区暂不可用'));
+      }
+      const data = payload.data;
+      const rows = asArray<any>(data.feed);
+      let added = 0;
+      for (const row of rows) {
+        // The mobile stock community is the user-discussion stream. The public
+        // hot feed also mixes in long articles (biz type 2), which made the
+        // sidebar look different from the app even though the endpoint matched.
+        if (toNumber(row?.info?.community_biz_type ?? row?.community_biz_type) !== 1) {
+          continue;
+        }
+        const post = parseTonghuashunCommunityPost(row);
+        if (post && !seen.has(post.id)) {
+          seen.add(post.id);
+          collected.push(post);
+          added += 1;
+        }
+      }
+      next = {
+        page: next.page + 1,
+        lastScore: toNumber(data.last_score ?? data.lastScore, next.lastScore),
+        lastPublishTime: toNumber(
+          data.last_publish_time ?? data.lastPublishTime,
+          next.lastPublishTime
+        ),
+        startPage: toNumber(data.start_page ?? data.startPage, next.startPage)
+      };
+      upstreamHasMore = Boolean(data.has_more ?? data.hasMore);
+      if (!rows.length || !added) {
+        upstreamHasMore = false;
+      }
+    }
+
+    const posts = collected.slice(0, requested);
+    const buffered = collected.slice(requested);
+    const hasMore = buffered.length > 0 || upstreamHasMore;
+    if (buffered.length) {
+      next.buffered = buffered;
+    }
+    const warning = '';
+    return {
+      posts,
+      cursor: hasMore ? next : null,
+      hasMore,
+      warning
+    };
+  }
+
+  public async getCommunityPostDetail(fallback: CommunityPost): Promise<CommunityPostDetail> {
+    const postId = String(fallback.id || '').trim();
+    const contentId = communityContentId(fallback.contentId || fallback.url);
+    if (!/^\d+$/.test(postId) || !contentId) {
+      throw new Error('同花顺帖子详情参数无效');
+    }
+    const [detailPayload, commentPage] = await Promise.all([
+      this.getJson<any>(
+        'https://c.10jqka.com.cn/lgt/post/open/api/post/info/get?content_id=' +
+          encodeURIComponent(contentId),
+        12_000,
+        2
+      ),
+      this.getCommunityComments(postId, contentId)
+    ]);
+    const detail = parseTonghuashunCommunityPostDetail(detailPayload, fallback);
+    return {
+      post: detail.post,
+      ipLocation: detail.ipLocation,
+      comments: commentPage.comments,
+      commentCursor: commentPage.cursor,
+      commentsHaveMore: commentPage.hasMore,
+      commentTotal: Math.max(commentPage.total, detail.post.commentCount)
+    };
+  }
+
+  public async getCommunityComments(
+    postId: string,
+    contentId: string,
+    cursor?: CommunityCommentCursor,
+    limit = 10
+  ): Promise<CommunityCommentPage> {
+    const normalizedPostId = String(postId || '').trim();
+    const normalizedContentId = communityContentId(contentId);
+    if (!/^\d+$/.test(normalizedPostId) || !normalizedContentId) {
+      throw new Error('同花顺评论参数无效');
+    }
+    const page = Math.max(1, Math.floor(toNumber(cursor?.page, 1)));
+    const requested = Math.max(1, Math.min(50, Math.floor(limit)));
+    const query = new URLSearchParams({
+      resource_id: normalizedPostId,
+      biz_type: '1',
+      page: String(page),
+      limit: String(requested),
+      query_type: '1',
+      cid: String(cursor?.cid || '0'),
+      original_id: normalizedContentId
+    });
+    const payload = await this.getJson<any>(
+      'https://c.10jqka.com.cn/lgt/content/open/api/comment/v3/list?' + query.toString(),
+      12_000,
+      2
+    );
+    const statusCode = toNumber(payload?.status_code ?? payload?.statusCode, -1);
+    if (statusCode !== 0 || !payload?.data) {
+      throw new Error(String(payload?.status_msg || payload?.statusMsg || '同花顺评论暂不可用'));
+    }
+    const rawRows = asArray<any>(payload.data.comments);
+    const comments = rawRows
+      .map(parseTonghuashunCommunityComment)
+      .filter((comment): comment is CommunityComment => Boolean(comment));
+    const noMoreHint = String(
+      payload.data.comment_area?.no_comment_hint ??
+        payload.data.commentArea?.noCommentHint ??
+        ''
+    ).trim();
+    const lastId = String(rawRows.at(-1)?.id || cursor?.cid || '0');
+    const hasMore = comments.length > 0 && !noMoreHint && lastId !== String(cursor?.cid || '0');
+    return {
+      comments,
+      cursor: hasMore ? { page: page + 1, cid: lastId } : null,
+      hasMore,
+      total: Math.max(0, toNumber(payload.data.comment_count ?? payload.data.commentCount))
+    };
+  }
+
+  public async getCommunityCommentReplies(
+    postId: string,
+    contentId: string,
+    rootId: string
+  ): Promise<CommunityComment[]> {
+    const normalizedPostId = String(postId || '').trim();
+    const normalizedContentId = communityContentId(contentId);
+    const normalizedRootId = String(rootId || '').trim();
+    if (
+      !/^\d+$/.test(normalizedPostId) ||
+      !normalizedContentId ||
+      !/^\d+$/.test(normalizedRootId)
+    ) {
+      throw new Error('同花顺楼中楼评论参数无效');
+    }
+    const collected = new Map<string, CommunityComment>();
+    let page = 1;
+    let cid = '0';
+    for (let request = 0; request < 100; request += 1) {
+      const query = new URLSearchParams({
+        resource_id: normalizedPostId,
+        biz_type: '1',
+        page: String(page),
+        limit: '50',
+        cid,
+        original_id: normalizedContentId,
+        root_id: normalizedRootId
+      });
+      const payload = await this.getJson<any>(
+        'https://c.10jqka.com.cn/lgt/content/open/api/comment/v3/child_list?' +
+          query.toString(),
+        12_000,
+        2
+      );
+      const statusCode = toNumber(payload?.status_code ?? payload?.statusCode, -1);
+      if (statusCode !== 0 || !payload?.data) {
+        throw new Error(
+          String(payload?.status_msg || payload?.statusMsg || '同花顺回复暂不可用')
+        );
+      }
+      const rawRows = asArray<any>(payload.data.comments);
+      for (const raw of rawRows) {
+        const comment = parseTonghuashunCommunityComment(raw);
+        if (comment) {
+          collected.set(comment.id, comment);
+        }
+      }
+      const nextCid = String(rawRows.at(-1)?.id || cid);
+      const noMoreHint = String(
+        payload.data.comment_area?.no_comment_hint ??
+          payload.data.commentArea?.noCommentHint ??
+          ''
+      ).trim();
+      if (!rawRows.length || noMoreHint || nextCid === cid) {
+        break;
+      }
+      cid = nextCid;
+      page += 1;
+    }
+    return Array.from(collected.values());
   }
 
   private async getSectorListPage(
@@ -382,6 +1314,19 @@ export class DataService {
       .filter((item) => /^BK\d+$/.test(item.code) && item.name.length > 0);
   }
 
+  private async getEastmoneySectorBoards(kind: SectorBoardKind): Promise<SectorBoard[]> {
+    const fields =
+      'f2,f3,f4,f8,f12,f13,f14,f22,f62,f104,f105,f124,f127,f128,f136,f140,f141';
+    const filter = kind === 'industry' ? 'm:90+t:2' : 'm:90+t:3';
+    const rows = await this.getSectorListRows(filter, 'f62', fields);
+    return this.mapSectorBoardRows(rows, kind);
+  }
+
+  private async getTonghuashunSectorLanding(kind: SectorBoardKind): Promise<string> {
+    const path = kind === 'industry' ? 'thshy' : 'gn';
+    return this.getText('https://q.10jqka.com.cn/' + path + '/', 18_000, 3);
+  }
+
   public async getSectorBoards(
     kind: SectorBoardKind,
     force = false
@@ -390,25 +1335,150 @@ export class DataService {
     if (!force && cached && Date.now() - cached.at < SECTOR_LIST_CACHE_TTL) {
       return cached.value;
     }
-    const fields =
-      'f2,f3,f4,f8,f12,f13,f14,f22,f62,f104,f105,f124,f127,f128,f136,f140,f141';
-    const filter = kind === 'industry' ? 'm:90+t:2' : 'm:90+t:3';
-    const rows = await this.getSectorListRows(filter, 'f62', fields);
-    const value = this.mapSectorBoardRows(rows, kind);
-    if (value.length < 100) {
-      throw new Error('Sector market data contains too few boards');
+    try {
+      const updatedAt = Date.now();
+      const landing = await this.getTonghuashunSectorLanding(kind);
+      let value =
+        kind === 'industry'
+          ? parseTonghuashunIndustryBoards(landing, updatedAt)
+          : parseTonghuashunConceptBoards(landing, updatedAt);
+      if (kind === 'industry') {
+        try {
+          const secondPage = await this.getText(
+            'https://q.10jqka.com.cn/thshy/index/field/199112/order/desc/page/2/ajax/1/',
+            18_000,
+            3
+          );
+          const merged = new Map(value.map((item) => [item.code, item]));
+          for (const item of parseTonghuashunIndustryBoards(secondPage, updatedAt)) {
+            merged.set(item.code, item);
+          }
+          value = Array.from(merged.values());
+        } catch {
+          // The landing page still contains the complete official industry directory.
+        }
+      }
+      // The desktop directory is the authoritative source for every board and its
+      // route code, while the quote bridge owns the live quote code and prices.
+      // Merge every row from each current group here. The sidebar intentionally
+      // uses d20 below, but the centre list is expected to contain full quotes.
+      try {
+        const quoteSources = await Promise.all(
+          TONGHUASHUN_SECTOR_GROUPS[kind].map((parent) =>
+            this.getText(
+              'https://d.10jqka.com.cn/v2/blocksrank/' +
+                parent +
+                '/199112/d1000.js',
+              18_000,
+              3
+            )
+          )
+        );
+        const liveBoards = quoteSources.flatMap((source) =>
+          parseTonghuashunBlockRankBoards(source, kind, updatedAt)
+        );
+        const liveByCode = new Map(liveBoards.map((item) => [item.code, item]));
+        const liveByName = new Map(liveBoards.map((item) => [item.name, item]));
+        value = value.map((item) => {
+          const live =
+            liveByCode.get(item.secid) ||
+            liveByCode.get(item.code) ||
+            liveByName.get(item.name);
+          if (!live) {
+            return item;
+          }
+          return {
+            ...item,
+            secid: live.code,
+            price: live.price,
+            percent: live.percent,
+            change: live.change,
+            leaderName: live.leaderName || item.leaderName,
+            leaderCode: live.leaderCode || item.leaderCode,
+            leaderSecid: live.leaderSecid || item.leaderSecid,
+            leaderPercent: live.leaderPercent || item.leaderPercent,
+            updatedAt
+          };
+        });
+      } catch {
+        // Directory data and its embedded quotes remain usable if a quote group
+        // is temporarily unavailable.
+      }
+      const minimum = kind === 'industry' ? 80 : 250;
+      if (value.length < minimum) {
+        throw new Error('同花顺' + (kind === 'industry' ? '行业' : '概念') + '目录返回不完整');
+      }
+      this.sectorBoardCache.set(kind, { at: updatedAt, value });
+      return value;
+    } catch (error) {
+      if (cached?.value.length) {
+        return cached.value;
+      }
+      throw error;
     }
-    this.sectorBoardCache.set(kind, { at: Date.now(), value });
+  }
+
+  private async getSectorRankingDirectory(kind: SectorBoardKind): Promise<SectorBoard[]> {
+    const cached = this.sectorRankingDirectoryCache.get(kind);
+    if (cached && Date.now() - cached.at < SECTOR_LIST_CACHE_TTL) return cached.value;
+    const source = await this.getTonghuashunSectorLanding(kind);
+    const value = kind === 'industry'
+      ? parseTonghuashunIndustryBoards(source)
+      : parseTonghuashunConceptBoards(source);
+    if (value.length < (kind === 'industry' ? 80 : 250)) {
+      throw new Error('同花顺板块排行目录不完整');
+    }
+    this.sectorRankingDirectoryCache.set(kind, { at: Date.now(), value });
     return value;
+  }
+
+  private async getTonghuashunRankedSectorBoards(
+    kind: SectorBoardKind,
+    count: number,
+    updatedAt: number
+  ): Promise<SectorBoard[]> {
+    // block identifiers are code prefixes, not complete industry/concept universes.
+    // Discover all quote prefixes from the official directory, including new boards.
+    const directory = await this.getSectorRankingDirectory(kind);
+    const quoteCodePattern = kind === 'industry' ? /^881\d{3}$/ : /^88[56]\d{3}$/;
+    const prefixes = Array.from(new Set(directory
+      .map((board) => board.secid)
+      .filter((code) => quoteCodePattern.test(code))
+      .map((code) => code.slice(0, 4))));
+    if (!prefixes.length) {
+      throw new Error('同花顺板块排行目录不可用');
+    }
+    const groups = await Promise.all(prefixes.map(async (prefix) => {
+      const source = await this.getText(
+        'https://d.10jqka.com.cn/v2/blocksrank/' + prefix + '/199112/d' + count + '.js',
+        15_000,
+        3
+      );
+      const total = Number(jsonpPayload<TonghuashunBlockRankPayload>(source).blocks?.subcodeCount);
+      const boards = parseTonghuashunBlockRankBoards(source, kind, updatedAt);
+      const unique = new Map(boards.map((board) => [board.code, board]));
+      if (!Number.isInteger(total) || total < 0 ||
+          unique.size < Math.min(count, total) ||
+          boards.some((board) => !board.code.startsWith(prefix))) {
+        throw new Error('同花顺板块排行分组返回不完整：' + prefix);
+      }
+      return boards;
+    }));
+    // A global TOP N can only contain boards from each prefix's own TOP N.
+    return Array.from(new Map(groups.flat().map((board) => [board.code, board])).values())
+      .sort((left, right) => right.percent - left.percent || left.code.localeCompare(right.code))
+      .slice(0, count);
   }
 
   public async getTopSectorBoards(
     kind: SectorBoardKind,
     limit = 20,
-    force = false
+    force = false,
+    sort: SectorBoardSort = 'percent'
   ): Promise<SectorBoard[]> {
-    const count = Math.max(1, Math.min(50, Math.floor(limit)));
-    const cached = this.topSectorBoardCache.get(kind);
+    const count = Math.max(1, Math.min(20, Math.floor(limit)));
+    const cacheKey = kind + ':' + sort;
+    const cached = this.topSectorBoardCache.get(cacheKey);
     if (
       !force &&
       cached &&
@@ -417,17 +1487,131 @@ export class DataService {
     ) {
       return cached.value.slice(0, count);
     }
-    const fields =
-      'f2,f3,f4,f8,f12,f13,f14,f22,f62,f104,f105,f124,f127,f128,f136,f140,f141';
-    const filter = kind === 'industry' ? 'm:90+t:2' : 'm:90+t:3';
-    const payload = await this.getSectorListPage(filter, 'f3', fields, 1, count);
-    const value = this.mapSectorBoardRows(asArray<any>(payload.data.diff), kind)
-      .sort((left, right) => right.percent - left.percent)
-      .slice(0, count);
-    if (!value.length) {
-      throw new Error('Sector ranking data is unavailable');
+    try {
+      const updatedAt = Date.now();
+      const value =
+        sort === 'heat'
+          ? parseTonghuashunHotSectorBoards(await this.getText(
+              'https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/plate?type=' +
+                kind,
+              15_000,
+              3
+            ), kind, updatedAt).slice(0, count)
+          : await this.getTonghuashunRankedSectorBoards(kind, count, updatedAt);
+      if (value.length < count) {
+        throw new Error('同花顺板块排行返回不完整');
+      }
+      this.topSectorBoardCache.set(cacheKey, { at: updatedAt, value });
+      return value;
+    } catch (error) {
+      if (cached?.value.length) {
+        return cached.value.slice(0, count);
+      }
+      throw error;
     }
-    this.topSectorBoardCache.set(kind, { at: Date.now(), value });
+  }
+
+  private getSectorRankPage(code: string, order: 'a' | 'd', count: number, force: boolean): Promise<string> {
+    const key = code + ':' + order + count;
+    const pending = this.sectorRankRequests.get(key);
+    if (pending) return pending;
+    const cached = this.sectorRankCache.get(key);
+    if (cached && Date.now() - cached.at < (force ? 500 : SECTOR_DETAIL_CACHE_TTL)) return Promise.resolve(cached.value);
+    const request = this.getText('https://d.10jqka.com.cn/v2/blockrank/' + code +
+      '/199112/' + order + count + '.js', 8_000, 1).then(value => {
+        this.sectorRankCache.set(key, { at: Date.now(), value });
+        return value;
+      }).finally(() => { this.sectorRankRequests.delete(key); });
+    this.sectorRankRequests.set(key, request);
+    return request;
+  }
+
+  public async getSectorBoardDetail(
+    bkCode: string,
+    force = false,
+    kind?: SectorBoardKind,
+    quoteCode?: string,
+    name?: string
+  ): Promise<SectorBoard> {
+    const normalized = bkCode.trim().toUpperCase().replace(/^48[.:]/, '');
+    if (!/^\d{6}$/.test(normalized)) {
+      throw new Error('Invalid sector board code: ' + bkCode);
+    }
+    const resolvedKind =
+      kind === 'concept' || kind === 'industry'
+        ? kind
+        : normalized.startsWith('881')
+          ? 'industry'
+          : 'concept';
+    const cacheKey = resolvedKind + ':' + normalized;
+    const cached = this.sectorDetailBoardCache.get(cacheKey);
+    if (!force && cached && Date.now() - cached.at < SECTOR_DETAIL_CACHE_TTL) {
+      return cached.value;
+    }
+    const updatedAt = Date.now();
+    // Clicking one board must not download the centre's full market rankings.
+    let directory = this.sectorBoardCache.get(resolvedKind)?.value ||
+      this.sectorRankingDirectoryCache.get(resolvedKind)?.value || [];
+    if (resolvedKind === 'concept' && !directory.some(item => item.code === normalized || item.secid === normalized)) {
+      try { directory = await this.getSectorRankingDirectory(resolvedKind); }
+      catch { /* Native quote codes remain usable without the web route directory. */ }
+    }
+    const hintedName = String(name || '').trim();
+    const base = directory.find(
+      (item) =>
+        item.code === normalized ||
+        item.secid === normalized ||
+        Boolean(hintedName && item.name === hintedName)
+    );
+    const routeCode = base?.code || normalized;
+    const hintedQuoteCode = String(quoteCode || '').trim().replace(/^48[.:]/, '');
+    const nativeQuoteCode = /^88\d{4}$/.test(hintedQuoteCode)
+      ? hintedQuoteCode
+      : /^88\d{4}$/.test(base?.secid || '')
+        ? String(base?.secid)
+        : /^88\d{4}$/.test(normalized)
+          ? normalized
+          : '';
+    let value =
+      base || emptyThsSectorBoard(routeCode, hintedName || normalized, resolvedKind, nativeQuoteCode || normalized, updatedAt);
+    let enriched = Boolean(base);
+    const detailPath = resolvedKind === 'industry' ? 'thshy' : 'gn';
+    const canLoadDetailPage =
+      resolvedKind === 'industry' ? /^881\d{3}$/.test(routeCode) : !/^88\d{4}$/.test(routeCode);
+    const pageRequest = canLoadDetailPage
+      ? this.getText('https://q.10jqka.com.cn/' + detailPath + '/detail/code/' + routeCode + '/', 8_000, 1)
+          .catch(() => undefined)
+      : Promise.resolve(undefined);
+    const rankRequest = nativeQuoteCode
+      ? this.getSectorRankPage(nativeQuoteCode, 'd', 500, force).catch(() => undefined)
+      : Promise.resolve(undefined);
+    const [pageSource, rankSource] = await Promise.all([pageRequest, rankRequest]);
+    if (pageSource) {
+      value = parseTonghuashunSectorBoardDetail(pageSource, resolvedKind, routeCode, value, updatedAt);
+      enriched = true;
+    }
+    const resolvedQuoteCode = /^88\d{4}$/.test(value.secid || '') ? String(value.secid) : nativeQuoteCode;
+    // A legacy route can reveal its quote code only in the detail heading.
+    const source = rankSource || (!nativeQuoteCode && resolvedQuoteCode
+      ? await this.getSectorRankPage(resolvedQuoteCode, 'd', 500, force).catch(() => undefined)
+      : undefined);
+    if (source) {
+      value = parseTonghuashunBlockRankBoard(source, resolvedKind, routeCode,
+        { ...value, secid: resolvedQuoteCode }, updatedAt);
+      enriched = true;
+    }
+    if (!enriched && !hintedName) {
+      throw new Error('同花顺板块详情暂不可用');
+    }
+    const directoryCache = this.sectorBoardCache.get(resolvedKind);
+    if (directoryCache) {
+      directoryCache.value = directoryCache.value.map((item) =>
+        item.code === value.code || item.secid === value.secid || item.name === value.name
+          ? { ...item, ...value }
+          : item
+      );
+    }
+    this.sectorDetailBoardCache.set(cacheKey, { at: updatedAt, value });
     return value;
   }
 
@@ -439,8 +1623,10 @@ export class DataService {
     ) {
       return this.sectorOverviewCache.value;
     }
-    const industry = await this.getSectorBoards('industry', force);
-    const concept = await this.getSectorBoards('concept', force);
+    const [industry, concept] = await Promise.all([
+      this.getEastmoneySectorBoards('industry'),
+      this.getEastmoneySectorBoards('concept')
+    ]);
     const combined = [...industry, ...concept];
     const value: SectorOverview = {
       hot3d: [...combined]
@@ -463,15 +1649,135 @@ export class DataService {
 
   public async getSectorConstituents(
     bkCode: string,
-    force = false
+    force = false,
+    kind?: SectorBoardKind,
+    quoteCode?: string
   ): Promise<SectorConstituent[]> {
     const normalized = bkCode.trim().toUpperCase().replace(/^90\./, '');
-    if (!/^BK\d+$/.test(normalized)) {
+    if (!/^BK\d+$/.test(normalized) && !/^\d{6}$/.test(normalized)) {
       throw new Error('Invalid sector board code: ' + bkCode);
     }
-    const cached = this.sectorConstituentCache.get(normalized);
+    const resolvedKind =
+      kind === 'concept' || kind === 'industry'
+        ? kind
+        : normalized.startsWith('881')
+          ? 'industry'
+          : 'concept';
+    const cacheKey = resolvedKind + ':' + normalized;
+    const cached = this.sectorConstituentCache.get(cacheKey);
     if (!force && cached && Date.now() - cached.at < SECTOR_DETAIL_CACHE_TTL) {
       return cached.value;
+    }
+    if (/^\d{6}$/.test(normalized)) {
+      try {
+        const path = resolvedKind === 'industry' ? 'thshy' : 'gn';
+        const updatedAt = Date.now();
+        const hintedQuoteCode = String(quoteCode || '').trim().replace(/^48[.:]/, '');
+        const cachedBoard = this.sectorBoardCache
+          .get(resolvedKind)
+          ?.value.find((item) => item.code === normalized);
+        const nativeQuoteCode = /^88\d{4}$/.test(hintedQuoteCode)
+          ? hintedQuoteCode
+          : /^88\d{4}$/.test(cachedBoard?.secid || '')
+            ? String(cachedBoard?.secid)
+            : /^88\d{4}$/.test(normalized)
+              ? normalized
+              : '';
+        let value: SectorConstituent[] = [];
+        if (nativeQuoteCode) {
+          const loadRank = async (order: 'a' | 'd', count: number) =>
+            parseTonghuashunBlockRankConstituents(
+              await this.getSectorRankPage(nativeQuoteCode, order, count, force),
+              updatedAt
+            );
+          let ranked;
+          try {
+            // d1000 is prone to gateway timeouts for large boards. d500 returns
+            // all current boards in one request and remains considerably more
+            // stable; if a board grows beyond 500 rows, merge both ends.
+            ranked = await loadRank('d', 500);
+          } catch {
+            const [descending, ascending] = await Promise.all([
+              loadRank('d', 200),
+              loadRank('a', 200)
+            ]);
+            const recovered = new Map(
+              [...descending.items, ...ascending.items].map((item) => [item.code, item])
+            );
+            ranked = {
+              items: Array.from(recovered.values()),
+              total: Math.max(descending.total, ascending.total)
+            };
+          }
+          if (ranked.total > ranked.items.length) {
+            const ascending = await loadRank('a', 500);
+            const merged = new Map(
+              [...ranked.items, ...ascending.items].map((item) => [item.code, item])
+            );
+            ranked = {
+              items: Array.from(merged.values()),
+              total: Math.max(ranked.total, ascending.total)
+            };
+          }
+          if (ranked.total > ranked.items.length) {
+            throw new Error(
+              '同花顺板块成分股返回不完整：' + ranked.items.length + '/' + ranked.total
+            );
+          }
+          value = ranked.items;
+        } else {
+          const landing = await this.getText(
+            'https://q.10jqka.com.cn/' + path + '/detail/code/' + normalized + '/',
+            18_000,
+            3
+          );
+          const merged = new Map(
+            parseTonghuashunSectorConstituents(landing, updatedAt).map((item) => [
+              item.code,
+              item
+            ])
+          );
+          const pageCount = parseTonghuashunPageCount(landing);
+          for (let page = 2; page <= pageCount; page += 4) {
+            const pages = Array.from(
+              { length: Math.min(4, pageCount - page + 1) },
+              (_unused, offset) => page + offset
+            );
+            const sources = await Promise.all(
+              pages.map((currentPage) =>
+                this.getText(
+                  'https://q.10jqka.com.cn/' +
+                    path +
+                    '/detail/code/' +
+                    normalized +
+                    '/field/199112/order/desc/page/' +
+                    currentPage +
+                    '/ajax/1/',
+                  18_000,
+                  3
+                )
+              )
+            );
+            for (const source of sources) {
+              for (const item of parseTonghuashunSectorConstituents(source, updatedAt)) {
+                merged.set(item.code, item);
+              }
+            }
+          }
+          value = Array.from(merged.values());
+        }
+        value.sort((left, right) => right.percent - left.percent);
+        if (!value.length) {
+          throw new Error('同花顺板块成分股返回为空');
+        }
+        this.sectorConstituentCache.set(cacheKey, { at: updatedAt, value });
+        return value;
+      } catch (error) {
+        if (cached?.value.length) {
+          return cached.value;
+        }
+        throw error;
+      }
     }
     const fields = 'f2,f3,f4,f8,f12,f13,f14,f20,f62,f124';
     const rows = await this.getSectorListRows('b:' + normalized, 'f3', fields);
@@ -494,7 +1800,7 @@ export class DataService {
         } as SectorConstituent;
       })
       .filter((item) => /^(sh|sz|bj)\d{6}$/.test(item.code));
-    this.sectorConstituentCache.set(normalized, { at: Date.now(), value });
+    this.sectorConstituentCache.set(cacheKey, { at: Date.now(), value });
     return value;
   }
 

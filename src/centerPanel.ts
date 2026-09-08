@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { shouldRequestCloudNetwork } from './cloudSnapshot';
-import { DataService } from './dataService';
+import { DataService, withSectorTradingTotals } from './dataService';
 import { ChinaMarketState, getChinaMarketState } from './marketHours';
 import { pickAStock } from './pickStock';
 import { StockProvider } from './providers';
@@ -12,14 +12,16 @@ import {
   CloudStock,
   DEFAULT_NAMES,
   MarketFilter,
+  SectorBoard,
   SectorBoardKind,
+  SectorConstituent,
   isAShareCode
 } from './types';
 
 const VALID_TABS = new Set<CenterTab>(['watch', 'assets', 'news', 'cloud', 'sector']);
 const VALID_FILTERS = new Set<MarketFilter>(['all', 'sh', 'sz', 'bj', 'star', 'chinext']);
 const VALID_SECTOR_KINDS = new Set<SectorBoardKind>(['industry', 'concept']);
-const SECTOR_CODE_PATTERN = /^BK\d{4}$/i;
+const SECTOR_CODE_PATTERN = /^(?:BK\d{4}|\d{6})$/i;
 const SECTOR_LIST_REFRESH_INTERVAL = 60_000;
 const SECTOR_DETAIL_REFRESH_INTERVAL = 15_000;
 
@@ -40,6 +42,7 @@ export class CenterPanel {
   private sectorView: SectorView = 'overview';
   private sectorKind: SectorListKind = 'industry';
   private selectedSectorCode = '';
+  private selectedSectorBoard: SectorBoard | undefined;
   private sectorOverviewRequestId = 0;
   private readonly sectorBoardsRequestIds: Record<SectorBoardKind, number> = {
     industry: 0,
@@ -77,11 +80,16 @@ export class CenterPanel {
     dataService: DataService,
     stockProvider: StockProvider,
     tab: CenterTab = 'watch',
-    code?: string
+    code?: string,
+    sectorTarget?: { kind: SectorBoardKind; code: string; board?: SectorBoard }
   ): CenterPanel {
     if (CenterPanel.current) {
+      if (sectorTarget && SECTOR_CODE_PATTERN.test(sectorTarget.code)) {
+        CenterPanel.current.openSectorBoard(sectorTarget.kind, sectorTarget.code, sectorTarget.board);
+      } else {
+        CenterPanel.current.navigate(tab, code);
+      }
       CenterPanel.current.panel.reveal(vscode.ViewColumn.One);
-      CenterPanel.current.navigate(tab, code);
       return CenterPanel.current;
     }
 
@@ -107,7 +115,8 @@ export class CenterPanel {
       dataService,
       stockProvider,
       tab,
-      code
+      code,
+      sectorTarget
     );
     return CenterPanel.current;
   }
@@ -119,13 +128,17 @@ export class CenterPanel {
     private readonly dataService: DataService,
     private readonly stockProvider: StockProvider,
     tab: CenterTab,
-    code?: string
+    code?: string,
+    sectorTarget?: { kind: SectorBoardKind; code: string; board?: SectorBoard }
   ) {
     this.activeTab = VALID_TABS.has(tab) ? tab : 'watch';
     this.selectedCode =
       code && isAShareCode(code)
         ? code.toLowerCase()
         : stateStore.getWatchlist()[0] || 'sh600036';
+    if (sectorTarget) {
+      this.openSectorBoard(sectorTarget.kind, sectorTarget.code, sectorTarget.board);
+    }
     this.panel.webview.html = this.getHtml(this.panel.webview);
 
     this.disposables.push(
@@ -147,11 +160,13 @@ export class CenterPanel {
     if (!this.ready) {
       return;
     }
-    this.post({
-      type: 'navigate',
-      tab: this.activeTab,
-      code: this.selectedCode
-    });
+    if (this.activeTab !== 'sector' || this.sectorView !== 'detail') {
+      this.post({
+        type: 'navigate',
+        tab: this.activeTab,
+        code: this.selectedCode
+      });
+    }
     void this.loadForActiveTab(false, true).catch((error) => {
       this.post({
         type: 'error',
@@ -160,7 +175,7 @@ export class CenterPanel {
     });
   }
 
-  public openSectorBoard(kind: SectorBoardKind, code: string): void {
+  public openSectorBoard(kind: SectorBoardKind, code: string, board?: SectorBoard): void {
     const normalized = this.normalizeSectorCode(code);
     if (!VALID_SECTOR_KINDS.has(kind) || !normalized) {
       return;
@@ -169,10 +184,11 @@ export class CenterPanel {
     this.sectorView = 'detail';
     this.sectorKind = kind;
     this.selectedSectorCode = normalized;
+    this.selectedSectorBoard =
+      board && this.normalizeSectorCode(board.code) === normalized ? board : undefined;
     if (!this.ready) {
       return;
     }
-    this.post({ type: 'navigate', tab: 'sector' });
     void this.loadSectorDetail(normalized, false).catch((error) => {
       this.post({
         type: 'error',
@@ -283,6 +299,15 @@ export class CenterPanel {
             const kind = String(message.kind || '') as SectorBoardKind;
             if (VALID_SECTOR_KINDS.has(kind)) {
               this.sectorKind = kind;
+            }
+            const suppliedBoard = message.board as SectorBoard | undefined;
+            if (
+              suppliedBoard &&
+              typeof suppliedBoard === 'object' &&
+              (this.normalizeSectorCode(suppliedBoard.code) === bkCode ||
+                this.normalizeSectorCode(suppliedBoard.secid) === bkCode)
+            ) {
+              this.selectedSectorBoard = suppliedBoard;
             }
             this.selectedSectorCode = bkCode;
             await this.loadSectorDetail(bkCode, Boolean(message.force));
@@ -557,16 +582,57 @@ export class CenterPanel {
     const requestId = ++this.sectorDetailRequestId;
     this.lastSectorRequestAt = Date.now();
     const kind = this.sectorKind === 'concept' ? 'concept' : 'industry';
-    this.post({ type: 'sectorDetailLoading', bkCode, kind });
-    const data = await this.dataService.getSectorConstituents(bkCode, force);
-    if (
-      requestId !== this.sectorDetailRequestId ||
-      this.sectorView !== 'detail' ||
-      bkCode !== this.selectedSectorCode
-    ) {
+    const hintedBoard =
+      this.selectedSectorBoard?.code === bkCode || this.selectedSectorBoard?.secid === bkCode
+        ? this.selectedSectorBoard
+        : undefined;
+    this.post({ type: 'sectorDetailLoading', bkCode, kind, board: hintedBoard });
+    let board: SectorBoard | undefined = hintedBoard;
+    let data: SectorConstituent[] | undefined;
+    const isCurrent = () => requestId === this.sectorDetailRequestId &&
+      this.sectorView === 'detail' && bkCode === this.selectedSectorCode;
+    const publish = () => {
+      if (!isCurrent() || !data) return;
+      const detailed = board ? withSectorTradingTotals(board, data) : undefined;
+      if (detailed) this.selectedSectorBoard = detailed;
+      this.post({ type: 'sectorDetail', bkCode, kind, board: detailed, data, updatedAt: Date.now() });
+    };
+    try {
+      const boardRequest = this.dataService.getSectorBoardDetail(
+        bkCode,
+        force,
+        kind,
+        hintedBoard?.secid,
+        hintedBoard?.name
+      );
+      const nativeCode = /^88\d{4}$/.test(hintedBoard?.secid || '') ? hintedBoard?.secid
+        : /^88\d{4}$/.test(bkCode) ? bkCode : undefined;
+      const constituentsRequest = nativeCode
+        ? this.dataService.getSectorConstituents(bkCode, force, kind, nativeCode)
+        : boardRequest.then(detail => this.dataService.getSectorConstituents(
+            detail.code || bkCode, force, kind, detail.secid));
+      // Render the complete constituent list as soon as it arrives; the optional
+      // HTML metrics/definition must not block the first useful detail view.
+      await Promise.all([
+        boardRequest.then(detail => { board = detail; publish(); }),
+        constituentsRequest.then(rows => { data = rows; publish(); })
+      ]);
+    } catch (error) {
+      if (
+        requestId === this.sectorDetailRequestId &&
+        this.sectorView === 'detail' &&
+        bkCode === this.selectedSectorCode
+      ) {
+        this.post({
+          type: 'sectorDetailError',
+          bkCode,
+          kind,
+          board,
+          message: error instanceof Error ? error.message : '同花顺板块详情加载失败'
+        });
+      }
       return;
     }
-    this.post({ type: 'sectorDetail', bkCode, kind, data, updatedAt: Date.now() });
   }
 
   private async toggleSectorFollow(code: string): Promise<void> {
@@ -693,6 +759,9 @@ export class CenterPanel {
       .readFileSync(htmlPath, 'utf8')
       .replaceAll('{{cspSource}}', webview.cspSource)
       .replaceAll('{{nonce}}', nonce)
+      .replaceAll('{{initialTab}}', this.activeTab)
+      .replaceAll('{{initialSectorCode}}', this.selectedSectorCode)
+      .replaceAll('{{initialSectorKind}}', this.sectorKind)
       .replaceAll('{{cssUri}}', cssUri.toString())
       .replaceAll('{{echartsUri}}', echartsUri.toString())
       .replaceAll('{{appUri}}', appUri.toString());

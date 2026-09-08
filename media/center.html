@@ -7,10 +7,15 @@
       content="default-src 'none'; img-src {{cspSource}} data: https:; style-src {{cspSource}} 'unsafe-inline'; script-src 'nonce-{{nonce}}' {{cspSource}}; font-src {{cspSource}};"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; min-height: 100%; background: var(--vscode-editor-background, #131313); color: var(--vscode-foreground, #c9c9c9); }
+      body.booting > * { visibility: hidden; }
+    </style>
     <link rel="stylesheet" href="{{cssUri}}" />
     <title>韭菜中心</title>
   </head>
-  <body>
+  <body class="booting" data-initial-tab="{{initialTab}}" data-initial-sector="{{initialSectorCode}}" data-initial-sector-kind="{{initialSectorKind}}">
     <svg class="svg-defs" aria-hidden="true" focusable="false">
       <symbol id="icon-brand" viewBox="0 0 24 24">
         <path fill="currentColor" stroke="none" d="M4 20v-6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v6H4Zm6 0V10a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v10h-4Zm6 0V5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v15h-4ZM3 22h18v-2H3v2Z" />
@@ -439,6 +444,7 @@
             </div>
 
             <div id="sectorDetailMetrics" class="sector-detail-metrics" aria-live="polite"></div>
+            <p id="sectorDetailDescription" class="sector-detail-description hidden"></p>
 
             <article class="sector-table-panel sector-constituent-panel">
               <div class="sector-section-heading sector-table-title">
@@ -453,8 +459,11 @@
                       <th>最新</th>
                       <th>涨跌幅</th>
                       <th>涨跌额</th>
+                      <th>振幅</th>
                       <th>换手</th>
-                      <th>净流入</th>
+                      <th>市盈率</th>
+                      <th>成交额</th>
+                      <th>流通市值</th>
                       <th>总市值</th>
                       <th>操作</th>
                     </tr>

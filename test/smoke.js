@@ -88,10 +88,26 @@ async function main() {
     service.getTopSectorBoards('industry', 20, true),
     service.getTopSectorBoards('concept', 20, true)
   ]);
-  assert.ok(industryBoards.length > 400, 'industry sector list should contain all board levels');
-  assert.ok(conceptBoards.length > 400, 'concept sector list should contain current boards');
+  const [hotIndustryBoards, hotConceptBoards] = await Promise.all([
+    service.getTopSectorBoards('industry', 20, true, 'heat'),
+    service.getTopSectorBoards('concept', 20, true, 'heat')
+  ]);
+  assert.ok(industryBoards.length > 80, 'industry sector list should contain Tonghuashun industries');
+  assert.ok(conceptBoards.length > 250, 'concept sector list should contain Tonghuashun concepts');
   assert.equal(topIndustryBoards.length, 20, 'sidebar industry ranking should contain TOP20');
   assert.equal(topConceptBoards.length, 20, 'sidebar concept ranking should contain TOP20');
+  assert.equal(hotIndustryBoards.length, 20, 'industry heat ranking should contain TOP20');
+  assert.equal(hotConceptBoards.length, 20, 'concept heat ranking should contain TOP20');
+  assert.ok(
+    hotIndustryBoards.every(
+      (item, index) => index === 0 || hotIndustryBoards[index - 1].heatRank < item.heatRank
+    ),
+    'industry heat ranking should preserve Tonghuashun heat order'
+  );
+  assert.ok(
+    !conceptBoards.some((item) => item.name.includes('昨日首板')),
+    'Tonghuashun concept boards should not include Eastmoney event labels'
+  );
   assert.ok(
     topIndustryBoards.every(
       (item, index) => index === 0 || topIndustryBoards[index - 1].percent >= item.percent
@@ -117,16 +133,20 @@ async function main() {
   assert.ok(
     industryBoards.every(
       (item) =>
-        /^BK\d+$/.test(item.code) &&
+        /^\d{6}$/.test(item.code) &&
         Number.isFinite(item.threeDayPercent) &&
         Number.isFinite(item.threeMinutePercent) &&
         Number.isFinite(item.netInflow)
     ),
-    'sector boards should expose f127, f22 and f62 metrics'
+    'Tonghuashun sector boards should use native route codes and normalized metrics'
   );
   const sampleBoard =
     industryBoards.find((item) => item.upCount + item.downCount > 0) || industryBoards[0];
-  const sectorConstituents = await service.getSectorConstituents(sampleBoard.code, true);
+  const sectorConstituents = await service.getSectorConstituents(
+    sampleBoard.code,
+    true,
+    'industry'
+  );
   assert.ok(sectorConstituents.length > 0, 'sector board should contain constituent stocks');
   assert.ok(
     sectorConstituents.every(

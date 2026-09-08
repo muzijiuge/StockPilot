@@ -8,7 +8,7 @@ import { HomeProvider, StockNode, StockProvider } from './providers';
 import { SidebarViewProvider } from './sidebarView';
 import { StateStore } from './stateStore';
 import { StockTrendPanel } from './stockTrendPanel';
-import { AppSnapshot, Holding, Quote, WatchGroup, isAShareCode } from './types';
+import { AppSnapshot, Holding, Quote, SectorBoard, WatchGroup, isAShareCode } from './types';
 
 function extractCode(value: unknown): string | undefined {
   if (typeof value === 'string' && isAShareCode(value.toLowerCase())) {
@@ -234,6 +234,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const eastmoneyProxy = new EastmoneyProxyServer();
   const stockProvider = new StockProvider(stateStore, dataService);
   const sidebarProvider = new SidebarViewProvider(context, stockProvider, dataService);
+  // Remove credentials saved by the retired community authentication feature.
+  void context.secrets.delete('aShareLeek.tonghuashunCommunityCookie').then(undefined, () => {});
   const homeProvider = new HomeProvider();
 
   context.subscriptions.push({ dispose: () => eastmoneyProxy.dispose() });
@@ -375,18 +377,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       )
     ),
     vscode.commands.registerCommand('aShareLeek.openSector', (value?: unknown) => {
-      const panel = CenterPanel.createOrShow(
+      const target = value && typeof value === 'object' && 'code' in value
+        ? value as { code?: unknown; kind?: unknown; board?: SectorBoard }
+        : undefined;
+      CenterPanel.createOrShow(
         context,
         stateStore,
         dataService,
         stockProvider,
-        'sector'
+        'sector',
+        undefined,
+        target ? {
+          kind: String(target.kind || '') === 'concept' ? 'concept' : 'industry',
+          code: String(target.code || ''),
+          board: target.board
+        } : undefined
       );
-      if (value && typeof value === 'object' && 'code' in value) {
-        const board = value as { code?: unknown; kind?: unknown };
-        const kind = String(board.kind || '') === 'concept' ? 'concept' : 'industry';
-        panel.openSectorBoard(kind, String(board.code || ''));
-      }
     }),
     vscode.commands.registerCommand('aShareLeek.openStock', async (value?: unknown) => {
       const code = extractCode(value);

@@ -15,6 +15,9 @@ html = html
   .replaceAll('{{echartsUri}}', '../media/echarts.min.js')
   .replaceAll('{{appUri}}', '../media/center.js')
   .replaceAll('{{nonce}}', '')
+  .replaceAll('{{initialTab}}', '')
+  .replaceAll('{{initialSectorCode}}', '')
+  .replaceAll('{{initialSectorKind}}', '')
   .replaceAll('{{cspSource}}', '');
 html = html.replace(
   '<script nonce="" src="../media/echarts.min.js"></script>',
